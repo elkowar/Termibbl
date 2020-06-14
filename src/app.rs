@@ -1,62 +1,18 @@
+use crate::{
+    data::{AppLine, CanvasColor, Coord, Message},
+    server::ToClientMsg,
+    ui, ClientEvent, CANVAS_SIZE, PALETTE_SIZE,
+};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
-use std::cmp::Ordering;
-use tui::style::Color;
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord)]
-pub struct Coord(pub u16, pub u16);
-
-impl PartialOrd for Coord {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        if self.0 < other.0 && self.1 < other.1 {
-            Some(Ordering::Less)
-        } else if self.0 == other.0 && self.1 == other.1 {
-            Some(Ordering::Equal)
-        } else {
-            Some(Ordering::Greater)
-        }
-    }
-}
-
-impl Coord {
-    pub fn within(&self, a: &Coord, b: &Coord) -> bool {
-        self > a.min(b) && self < a.max(b)
-    }
-}
-
-impl From<(i16, i16)> for Coord {
-    fn from(x: (i16, i16)) -> Self {
-        Coord(x.0 as u16, x.1 as u16)
-    }
-}
-impl From<Coord> for (i16, i16) {
-    fn from(c: Coord) -> Self {
-        (c.0 as i16, c.1 as i16)
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct AppLine {
-    pub start: Coord,
-    pub end: Coord,
-    pub color: Color,
-}
-
-impl AppLine {
-    pub fn new(start: Coord, end: Coord, color: Color) -> Self {
-        AppLine { start, end, color }
-    }
-    pub fn coords_in(&self) -> Vec<Coord> {
-        line_drawing::Bresenham::new(self.start.into(), self.end.into())
-            .map(Coord::from)
-            .collect()
-    }
-}
+use std::{cmp::Ordering, sync::mpsc};
+use tui::{backend::Backend, style::Color, Terminal};
 
 #[derive(Debug, Clone)]
 pub struct AppCanvas {
+    pub palette: Vec<CanvasColor>,
     pub lines: Vec<AppLine>,
     pub last_mouse_pos: Option<Coord>,
-    pub current_color: Color,
+    pub current_color: CanvasColor,
 }
 
 impl AppCanvas {
@@ -64,7 +20,26 @@ impl AppCanvas {
         AppCanvas {
             lines: Vec::new(),
             last_mouse_pos: None,
-            current_color: Color::White,
+            current_color: CanvasColor(Color::White),
+            palette: [
+                CanvasColor(Color::White),
+                CanvasColor(Color::Gray),
+                CanvasColor(Color::DarkGray),
+                CanvasColor(Color::Black),
+                CanvasColor(Color::Red),
+                CanvasColor(Color::LightRed),
+                CanvasColor(Color::Green),
+                CanvasColor(Color::LightGreen),
+                CanvasColor(Color::Blue),
+                CanvasColor(Color::LightBlue),
+                CanvasColor(Color::Yellow),
+                CanvasColor(Color::LightYellow),
+                CanvasColor(Color::Cyan),
+                CanvasColor(Color::LightCyan),
+                CanvasColor(Color::Magenta),
+                CanvasColor(Color::LightMagenta),
+            ]
+            .to_vec(),
         }
     }
 }
@@ -73,7 +48,16 @@ impl AppCanvas {
     pub fn apply_mouse_event(&mut self, evt: MouseEvent) -> Option<()> {
         match evt {
             MouseEvent::Down(_, x, y, _) => {
-                self.last_mouse_pos = Some(Coord(x, y));
+                if y == 0 {
+                    let swatch_size = CANVAS_SIZE.0 / self.palette.len() as usize;
+                    let selected_color = self.palette.get(x as usize / swatch_size);
+                    match selected_color {
+                        Some(color) => self.current_color = color.clone(),
+                        _ => {}
+                    }
+                } else {
+                    self.last_mouse_pos = Some(Coord(x, y));
+                }
             }
             MouseEvent::Up(_, x, y, _) => {
                 self.last_mouse_pos = None;
@@ -93,39 +77,71 @@ impl AppCanvas {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct Chat {
+    pub input: String,
+    pub messages: Vec<Message>,
+}
+
+impl Chat {
+    fn apply_key_event(&mut self, code: &KeyCode) {
+        match code {
+            KeyCode::Char(c) => self.input.push(*c),
+            KeyCode::Enter => {
+                self.input = String::new();
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct App {
     pub canvas: AppCanvas,
-    pub chat: Vec<String>,
-    pub input: String,
-    pub should_stop: bool,
+    pub chat: Chat,
 }
 
 impl App {
     pub fn new() -> App {
         App {
             canvas: AppCanvas::new(),
-            chat: Vec::new(),
-            input: String::new(),
-            should_stop: false,
+            chat: Chat::default(),
         }
     }
-    pub fn apply_mouse_event(&mut self, evt: MouseEvent) {
-        self.canvas.apply_mouse_event(evt);
+
+    pub fn handle_event(&mut self, evt: ClientEvent) {
+        match evt {
+            ClientEvent::KeyInput(KeyEvent { code, modifiers }) => match code {
+                code => self.chat.apply_key_event(&code),
+            },
+            ClientEvent::MouseInput(mouse_evt) => {
+                self.canvas.apply_mouse_event(mouse_evt);
+            }
+            ClientEvent::ServerMessage(m) => match m {
+                ToClientMsg::NewMessage(message) => self.chat.messages.push(message),
+            },
+        }
     }
-    pub fn apply_key_event(&mut self, evt: KeyEvent) {
-        let KeyEvent { code, modifiers } = evt;
-        match code {
-            KeyCode::Esc => self.should_stop = true,
-            KeyCode::Char(c) => self.input.push(c),
-            KeyCode::Enter => {
-                self.chat.push(self.input.clone());
-                self.input.clear();
+
+    pub fn run<B: Backend>(
+        &mut self,
+        mut terminal: &mut Terminal<B>,
+        chan: mpsc::Receiver<ClientEvent>,
+    ) {
+        loop {
+            ui::draw(self, &mut terminal);
+            let event = chan.recv();
+            match event {
+                Ok(event) => {
+                    self.handle_event(event);
+                }
+                Err(err) => {
+                    eprintln!("{}", err);
+                }
             }
-            KeyCode::Backspace => {
-                self.input.pop();
-            }
-            _ => {}
         }
     }
 }
