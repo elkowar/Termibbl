@@ -3,6 +3,7 @@ use std::{
     sync::mpsc,
     thread,
 };
+use tokio::prelude::*;
 
 use app::App;
 use crossterm::{
@@ -12,7 +13,7 @@ use crossterm::{
     Result,
 };
 
-use server::ToClientMsg;
+use server::{ToClientMsg, ToServerMsg};
 use tui::{backend::CrosstermBackend, Terminal};
 
 pub mod app;
@@ -21,6 +22,7 @@ pub mod server;
 pub mod ui;
 
 pub use serde::{Deserialize, Serialize};
+use tokio_tungstenite;
 
 pub const CANVAS_SIZE: (usize, usize) = (100, 50);
 pub const PALETTE_SIZE: usize = 100;
@@ -43,8 +45,9 @@ pub enum ClientEvent {
 }
 
 async fn run_client() -> Result<()> {
-    let (send, recv) = mpsc::channel::<ClientEvent>();
-    let (websocket_send, websocket_recv) = mpsc::channel::<ToClientMsg>();
+    let (client_evt_send, client_evt_recv) = mpsc::channel::<ClientEvent>();
+    let (to_server_send, to_server_recv) = tokio::sync::mpsc::unbounded_channel::<ToServerMsg>();
+
     let mut app = App::new();
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
@@ -52,20 +55,33 @@ async fn run_client() -> Result<()> {
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    thread::spawn(move || app.run(&mut terminal, recv));
+    thread::spawn(move || app.run(&mut terminal, client_evt_recv));
+    let mut ws = tokio_tungstenite::connect_async("ws://localhost:8080")
+        .await
+        .unwrap()
+        .0;
+    let (ws_read, ws_write) = ws.get_mut().split();
+    tokio::spawn(async {
+        tokio::select! {
+            to_server_msg = to_server_recv.recv() => {
+                ws_write.write_all(
+                    serde_json::to_string(&to_server_msg)
+                        .unwrap()
+                        .as_bytes(),
+                );
+            },
+        }
+    });
     tokio::spawn(async move {
-        let mut ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> =
-            tokio_tungstenite::connect_async("ws://localhost:8080")
-                .await
-                .unwrap()
-                .0;
-        //ws.write_all(b"hi").await.unwrap();
-        //loop {
-        //match ws.0.read_message() {
-        //Ok(msg) => println!("{}", msg),
-        //_ => {}
-        //}
-        //}
+        ws_write.write_all(b"hi");
+        loop {
+            let mut msg = String::new();
+            ws_read.read_to_string(&mut msg);
+            let msg = serde_json::from_str(&msg).unwrap();
+            client_evt_send
+                .send(ClientEvent::ServerMessage(msg))
+                .unwrap();
+        }
     });
 
     loop {
@@ -75,9 +91,9 @@ async fn run_client() -> Result<()> {
                     code: KeyCode::Esc,
                     modifiers: _,
                 } => break,
-                _ => send.send(ClientEvent::KeyInput(evt)).unwrap(),
+                _ => client_evt_send.send(ClientEvent::KeyInput(evt)).unwrap(),
             },
-            Event::Mouse(evt) => send.send(ClientEvent::MouseInput(evt)).unwrap(),
+            Event::Mouse(evt) => client_evt_send.send(ClientEvent::MouseInput(evt)).unwrap(),
             _ => {}
         }
     }
