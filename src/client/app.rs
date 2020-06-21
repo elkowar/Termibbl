@@ -104,12 +104,14 @@ impl App {
         }
     }
 
-    pub async fn handle_chat_key_event(&mut self, code: &KeyCode) {
+    pub async fn handle_chat_key_event(&mut self, code: &KeyCode) -> Result<()> {
         match code {
-            KeyCode::Char(c) => self.chat.input.push(*c),
+            KeyCode::Char(c) => {
+                self.chat.input.push(*c);
+            }
             KeyCode::Enter => {
                 let message = Message::new(self.session.username.clone(), self.chat.input.clone());
-                self.session.send(ToServerMsg::NewMessage(message)).await;
+                self.session.send(ToServerMsg::NewMessage(message)).await?;
                 self.chat.input = String::new();
             }
             KeyCode::Backspace => {
@@ -117,12 +119,13 @@ impl App {
             }
             _ => {}
         }
+        Ok(())
     }
 
-    pub async fn handle_event(&mut self, evt: ClientEvent) {
+    pub async fn handle_event(&mut self, evt: ClientEvent) -> Result<()> {
         match evt {
             ClientEvent::KeyInput(KeyEvent { code, .. }) => {
-                self.handle_chat_key_event(&code).await;
+                self.handle_chat_key_event(&code).await?;
             }
             ClientEvent::MouseInput(mouse_evt) => {
                 self.canvas.apply_mouse_event(mouse_evt);
@@ -132,18 +135,19 @@ impl App {
                 _ => {}
             },
         }
+        Ok(())
     }
 
     pub async fn run<B: Backend>(
         &mut self,
         mut terminal: &mut Terminal<B>,
         mut chan: tokio::sync::mpsc::Receiver<ClientEvent>,
-    ) {
+    ) -> Result<()> {
         loop {
             ui::draw(self, &mut terminal);
             let event = chan.recv().await;
             if let Some(event) = event {
-                self.handle_event(event).await;
+                self.handle_event(event).await?;
             }
         }
     }
@@ -177,7 +181,9 @@ impl ServerSession {
             loop {
                 let msg = to_server_recv.recv().await;
                 let msg = serde_json::to_string(&msg).unwrap();
-                ws_send.send(tungstenite::Message::Text(msg)).await.unwrap();
+                if let Err(_) = ws_send.send(tungstenite::Message::Text(msg)).await {
+                    break;
+                }
             }
         });
 

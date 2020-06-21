@@ -1,5 +1,6 @@
 use crate::{
     client::app::{App, AppCanvas, Chat},
+    client::error::Result,
     data::Coord,
     CANVAS_SIZE,
 };
@@ -12,41 +13,39 @@ use tui::{
     Terminal,
 };
 
-pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) {
-    terminal
-        .draw(|mut f| {
-            use Constraint::*;
-            let size = f.size();
-            let main_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .margin(0)
-                .constraints(
-                    [
-                        Length(CANVAS_SIZE.0 as u16),
-                        Length(if size.width < CANVAS_SIZE.0 as u16 {
-                            size.width
-                        } else {
-                            size.width - CANVAS_SIZE.0 as u16
-                        }),
-                    ]
-                    .as_ref(),
-                )
-                .split(size);
+pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
+    terminal.draw(|mut f| {
+        use Constraint::*;
+        let size = f.size();
+        let main_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .margin(0)
+            .constraints(
+                [
+                    Length(CANVAS_SIZE.0 as u16),
+                    Length(if size.width < CANVAS_SIZE.0 as u16 {
+                        size.width
+                    } else {
+                        size.width - CANVAS_SIZE.0 as u16
+                    }),
+                ]
+                .as_ref(),
+            )
+            .split(size);
 
-            let canvas_area = {
-                let mut x = main_chunks[0];
-                x.height = x.height.min(CANVAS_SIZE.1 as u16);
-                x
-            };
+        let canvas_area = {
+            let mut x = main_chunks[0];
+            x.height = x.height.min(CANVAS_SIZE.1 as u16);
+            x
+        };
 
-            let canvas_widget =
-                CanvasWidget::new(&app.canvas, Block::default().borders(Borders::ALL));
-            f.render_widget(canvas_widget, canvas_area);
+        let canvas_widget = CanvasWidget::new(&app.canvas, Block::default().borders(Borders::ALL));
+        f.render_widget(canvas_widget, canvas_area);
 
-            let chat_widget = ChatWidget::new(&app.chat, Block::default().borders(Borders::ALL));
-            f.render_widget(chat_widget, main_chunks[1]);
-        })
-        .unwrap();
+        let chat_widget = ChatWidget::new(&app.chat, Block::default().borders(Borders::ALL));
+        f.render_widget(chat_widget, main_chunks[1]);
+    })?;
+    Ok(())
 }
 
 pub struct CanvasWidget<'a, 't> {

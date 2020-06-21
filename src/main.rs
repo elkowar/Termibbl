@@ -47,12 +47,12 @@ pub enum ClientEvent {
     ServerMessage(message::ToClientMsg),
 }
 
-async fn run_client(username: String) -> Result<()> {
+async fn run_client(username: String) -> client::error::Result<()> {
     let (mut client_evt_send, client_evt_recv) = tokio::sync::mpsc::channel::<ClientEvent>(1);
 
     let session = ServerSession::establish_connection(username, client_evt_send.clone()).await;
 
-    let mut app = client::app::App::new(session.unwrap());
+    let mut app = client::app::App::new(session?);
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     execute!(stdout(), EnableMouseCapture)?;
@@ -81,5 +81,6 @@ async fn run_client(username: String) -> Result<()> {
 
     execute!(stdout(), DisableMouseCapture)?;
     execute!(stdout(), LeaveAlternateScreen)?;
-    disable_raw_mode()
+    disable_raw_mode()?;
+    Ok(())
 }
