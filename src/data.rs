@@ -58,6 +58,12 @@ pub struct Message {
     text: String,
 }
 
+impl Message {
+    pub fn new(user: String, text: String) -> Self {
+        Message { user, text }
+    }
+}
+
 impl Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.user, self.text)
@@ -76,7 +82,7 @@ impl Serialize for CanvasColor {
 }
 
 impl<'de> Deserialize<'de> for CanvasColor {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {

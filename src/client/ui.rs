@@ -1,5 +1,5 @@
 use crate::{
-    app::{App, AppCanvas, Chat},
+    client::app::{App, AppCanvas, Chat},
     data::Coord,
     CANVAS_SIZE,
 };
@@ -61,7 +61,7 @@ impl<'a, 't> CanvasWidget<'a, 't> {
 }
 
 impl<'a, 't, 'b> Widget for CanvasWidget<'a, 't> {
-    fn render(mut self, area: tui::layout::Rect, buf: &mut tui::buffer::Buffer) {
+    fn render(self, area: tui::layout::Rect, buf: &mut tui::buffer::Buffer) {
         self.block
             .border_style(Style::default().bg(self.canvas.current_color.0))
             .render(area, buf);
@@ -98,7 +98,7 @@ impl<'a, 't> ChatWidget<'a, 't> {
     }
 }
 impl<'a, 't, 'b> Widget for ChatWidget<'a, 't> {
-    fn render(mut self, area: tui::layout::Rect, buf: &mut tui::buffer::Buffer) {
+    fn render(self, area: tui::layout::Rect, buf: &mut tui::buffer::Buffer) {
         use Constraint::*;
         self.block.render(area, buf);
         let area = self.block.inner(area);
