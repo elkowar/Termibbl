@@ -163,13 +163,11 @@ pub async fn run_server(
         let mut file = std::fs::File::open(word_file)?;
         let mut words = String::new();
         file.read_to_string(&mut words)?;
-        GameState::Skribbl(
-            words
-                .lines()
-                .map(|x| x.to_string())
-                .collect::<Vec<String>>(),
-            None,
-        )
+        let words = words
+            .lines()
+            .map(|x| x.to_string())
+            .collect::<Vec<String>>();
+        GameState::Skribbl(words, None)
     } else {
         GameState::FreeDraw
     };

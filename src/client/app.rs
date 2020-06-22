@@ -20,9 +20,9 @@ pub struct AppCanvas {
 }
 
 impl AppCanvas {
-    fn new(dimensions: (usize, usize)) -> Self {
+    fn new(dimensions: (usize, usize), lines: Vec<data::Line>) -> Self {
         AppCanvas {
-            lines: Vec::new(),
+            lines: lines,
             dimensions,
             palette: [
                 CanvasColor::White,
@@ -71,7 +71,7 @@ pub struct App {
 impl App {
     pub fn new(session: ServerSession, initial_state: InitialState) -> App {
         App {
-            canvas: AppCanvas::new(initial_state.dimensions),
+            canvas: AppCanvas::new(initial_state.dimensions, initial_state.lines),
             chat: Chat::default(),
             last_mouse_pos: None,
             current_color: CanvasColor::White,
