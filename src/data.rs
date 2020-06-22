@@ -35,15 +35,15 @@ impl From<Coord> for (i16, i16) {
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct AppLine {
+pub struct Line {
     pub start: Coord,
     pub end: Coord,
     pub color: CanvasColor,
 }
 
-impl AppLine {
+impl Line {
     pub fn new(start: Coord, end: Coord, color: CanvasColor) -> Self {
-        AppLine { start, end, color }
+        Line { start, end, color }
     }
     pub fn coords_in(&self) -> Vec<Coord> {
         line_drawing::Bresenham::new(self.start.into(), self.end.into())
@@ -70,22 +70,45 @@ impl Display for Message {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct CanvasColor(pub Color);
-impl Serialize for CanvasColor {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_unit()
-    }
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum CanvasColor {
+    White,
+    Gray,
+    DarkGray,
+    Black,
+    Red,
+    LightRed,
+    Green,
+    LightGreen,
+    Blue,
+    LightBlue,
+    Yellow,
+    LightYellow,
+    Cyan,
+    LightCyan,
+    Magenta,
+    LightMagenta,
 }
 
-impl<'de> Deserialize<'de> for CanvasColor {
-    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(CanvasColor(Color::White))
+impl From<CanvasColor> for Color {
+    fn from(c: CanvasColor) -> Self {
+        match c {
+            CanvasColor::White => Color::White,
+            CanvasColor::Gray => Color::Gray,
+            CanvasColor::DarkGray => Color::DarkGray,
+            CanvasColor::Black => Color::Black,
+            CanvasColor::Red => Color::Red,
+            CanvasColor::LightRed => Color::LightRed,
+            CanvasColor::Green => Color::Green,
+            CanvasColor::LightGreen => Color::LightGreen,
+            CanvasColor::Blue => Color::Blue,
+            CanvasColor::LightBlue => Color::LightBlue,
+            CanvasColor::Yellow => Color::Yellow,
+            CanvasColor::LightYellow => Color::LightYellow,
+            CanvasColor::Cyan => Color::Cyan,
+            CanvasColor::LightCyan => Color::LightCyan,
+            CanvasColor::Magenta => Color::Magenta,
+            CanvasColor::LightMagenta => Color::LightMagenta,
+        }
     }
 }

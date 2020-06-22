@@ -39,7 +39,12 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
             x
         };
 
-        let canvas_widget = CanvasWidget::new(&app.canvas, Block::default().borders(Borders::ALL));
+        let canvas_widget = CanvasWidget::new(
+            &app.canvas,
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().bg(app.current_color.into())),
+        );
         f.render_widget(canvas_widget, canvas_area);
 
         let chat_widget = ChatWidget::new(&app.chat, Block::default().borders(Borders::ALL));
@@ -61,9 +66,7 @@ impl<'a, 't> CanvasWidget<'a, 't> {
 
 impl<'a, 't, 'b> Widget for CanvasWidget<'a, 't> {
     fn render(self, area: tui::layout::Rect, buf: &mut tui::buffer::Buffer) {
-        self.block
-            .border_style(Style::default().bg(self.canvas.current_color.0))
-            .render(area, buf);
+        self.block.render(area, buf);
         let area = self.block.inner(area);
 
         for line in self.canvas.lines.iter() {
@@ -72,7 +75,7 @@ impl<'a, 't, 'b> Widget for CanvasWidget<'a, 't> {
                     &Coord(area.x, area.y),
                     &Coord(area.x + area.width, area.y + area.height),
                 ) {
-                    buf.get_mut(cell.0, cell.1).set_bg(line.color.0);
+                    buf.get_mut(cell.0, cell.1).set_bg(line.color.into());
                 }
             }
         }
@@ -80,7 +83,7 @@ impl<'a, 't, 'b> Widget for CanvasWidget<'a, 't> {
         for (idx, col) in self.canvas.palette.iter().enumerate() {
             for offset in 0..swatch_size {
                 buf.get_mut(offset + (idx as u16 * swatch_size), 0)
-                    .set_bg(col.0.clone());
+                    .set_bg((*col).into());
             }
         }
     }
@@ -116,6 +119,7 @@ impl<'a, 't, 'b> Widget for ChatWidget<'a, 't> {
             self.chat
                 .messages
                 .iter()
+                .rev()
                 .map(|msg| Text::raw(format!("{}", msg))),
         )
         .block(Block::default().borders(Borders::ALL).title("Chat"))

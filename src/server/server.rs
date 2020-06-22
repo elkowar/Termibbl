@@ -1,6 +1,9 @@
 //https://github.com/snapview/tokio-tungstenite/blob/master/examples/server.rs
 
-use crate::message::{ToClientMsg, ToServerMsg};
+use crate::{
+    data,
+    message::{ToClientMsg, ToServerMsg},
+};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::{collections::HashMap, sync::Arc};
@@ -45,17 +48,24 @@ impl UserSession {
             points: 0,
         }
     }
+
+    async fn send(&mut self, msg: ToClientMsg) -> Result<()> {
+        self.msg_send.send(msg.clone()).await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
 struct ServerState {
     sessions: HashMap<String, UserSession>,
+    pub lines: Vec<data::Line>,
 }
 
 impl ServerState {
     fn new() -> Self {
         ServerState {
             sessions: HashMap::new(),
+            lines: Vec::new(),
         }
     }
     async fn on_message(&mut self, _username: &str, msg: ToServerMsg) -> Result<()> {
@@ -64,15 +74,24 @@ impl ServerState {
                 println!("new message: {:?}", message);
                 self.broadcast(ToClientMsg::NewMessage(message)).await?
             }
+            ToServerMsg::NewLine(line) => {
+                self.lines.push(line);
+                self.broadcast(ToClientMsg::NewLine(line)).await?;
+            }
         }
         Ok(())
     }
 
-    pub async fn on_user_joined(&mut self, session: UserSession) -> Result<()> {
-        self.sessions
-            .insert(session.username.clone(), session.clone());
-        self.broadcast(ToClientMsg::UserJoined(session.username))
+    pub async fn on_user_joined(&mut self, mut session: UserSession) -> Result<()> {
+        session
+            .send(ToClientMsg::InitialState {
+                current_users: self.sessions.keys().map(|x| x.clone()).collect(),
+                lines: self.lines.clone(),
+            })
             .await?;
+        self.broadcast(ToClientMsg::UserJoined(session.username.clone()))
+            .await?;
+        self.sessions.insert(session.username.clone(), session);
         Ok(())
     }
     pub async fn on_user_leave(&mut self, username: &str) {
@@ -85,7 +104,6 @@ impl ServerState {
         self.sessions
             .get_mut(user)
             .ok_or(ServerError::UserNotFound(user.to_string()))?
-            .msg_send
             .send(msg)
             .await?;
         Ok(())
@@ -93,15 +111,15 @@ impl ServerState {
 
     async fn broadcast(&mut self, msg: ToClientMsg) -> Result<()> {
         for (_, session) in self.sessions.iter_mut() {
-            session.msg_send.send(msg.clone()).await?;
+            session.send(msg.clone()).await?;
         }
         Ok(())
     }
 }
 
-pub async fn run_server() {
-    println!("Running server on ws://localhost:8080");
-    let mut server_listener = TcpListener::bind("localhost:8080")
+pub async fn run_server(addr: &str) {
+    println!("Running server on {}", addr);
+    let mut server_listener = TcpListener::bind(addr)
         .await
         .expect("Could not start webserver (could not bind)");
 
@@ -158,13 +176,17 @@ async fn handle_connection(
         let msg = ws_receiver.next().await;
         let mut state = state.lock().await;
         match msg {
-            Some(Ok(tungstenite::Message::Text(msg))) => {
-                if let Ok(Some(msg)) = serde_json::from_str(&msg) {
+            Some(Ok(tungstenite::Message::Text(msg))) => match serde_json::from_str(&msg) {
+                Ok(Some(msg)) => {
                     state.on_message(&username, msg).await?;
-                } else {
-                    println!("got unparseable message: {}", msg)
                 }
-            }
+                Ok(None) => {
+                    println!("got none");
+                }
+                Err(err) => {
+                    println!("{} (msg was: {})", err, msg);
+                }
+            },
             Some(Ok(tungstenite::Message::Close(_))) | Some(Err(_)) | None => break,
             _ => {}
         }

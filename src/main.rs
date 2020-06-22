@@ -3,12 +3,7 @@ pub mod data;
 pub mod message;
 pub mod server;
 
-use std::{
-    io::{stdout, Write},
-    sync::mpsc,
-    thread,
-};
-use tokio::prelude::*;
+use std::io::{stdout, Write};
 
 use crossterm::{
     event::{read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseEvent},
@@ -21,19 +16,18 @@ use tui::{backend::CrosstermBackend, Terminal};
 
 use client::app::ServerSession;
 pub use serde::{Deserialize, Serialize};
-use tokio_tungstenite;
 
 pub const CANVAS_SIZE: (usize, usize) = (100, 50);
-pub const PALETTE_SIZE: usize = 100;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    match std::env::args().nth(1) {
+    let addr = std::env::args().nth(1).unwrap();
+    match std::env::args().nth(2) {
         Some(arg) => {
             if arg == "--server".to_string() {
-                server::server::run_server().await;
+                server::server::run_server(&addr).await;
             } else {
-                run_client(arg).await;
+                run_client(&addr, arg).await.unwrap();
             }
             Ok(())
         }
@@ -47,10 +41,11 @@ pub enum ClientEvent {
     ServerMessage(message::ToClientMsg),
 }
 
-async fn run_client(username: String) -> client::error::Result<()> {
+async fn run_client(addr: &str, username: String) -> client::error::Result<()> {
     let (mut client_evt_send, client_evt_recv) = tokio::sync::mpsc::channel::<ClientEvent>(1);
 
-    let session = ServerSession::establish_connection(username, client_evt_send.clone()).await;
+    let session =
+        ServerSession::establish_connection(addr, username, client_evt_send.clone()).await;
 
     let mut app = client::app::App::new(session?);
     enable_raw_mode()?;
@@ -59,7 +54,7 @@ async fn run_client(username: String) -> client::error::Result<()> {
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
     tokio::spawn(async move {
-        app.run(&mut terminal, client_evt_recv).await;
+        app.run(&mut terminal, client_evt_recv).await.unwrap();
     });
     loop {
         match read()? {

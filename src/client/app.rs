@@ -1,7 +1,7 @@
 use crate::{
     client::error::Result,
     client::ui,
-    data::{AppLine, CanvasColor, Coord, Message},
+    data::{self, CanvasColor, Coord, Line, Message},
     message::{ToClientMsg, ToServerMsg},
     ClientEvent, CANVAS_SIZE,
 };
@@ -15,34 +15,30 @@ use tui::{backend::Backend, style::Color, Terminal};
 #[derive(Debug, Clone)]
 pub struct AppCanvas {
     pub palette: Vec<CanvasColor>,
-    pub lines: Vec<AppLine>,
-    pub last_mouse_pos: Option<Coord>,
-    pub current_color: CanvasColor,
+    pub lines: Vec<data::Line>,
 }
 
 impl AppCanvas {
     fn new() -> Self {
         AppCanvas {
             lines: Vec::new(),
-            last_mouse_pos: None,
-            current_color: CanvasColor(Color::White),
             palette: [
-                CanvasColor(Color::White),
-                CanvasColor(Color::Gray),
-                CanvasColor(Color::DarkGray),
-                CanvasColor(Color::Black),
-                CanvasColor(Color::Red),
-                CanvasColor(Color::LightRed),
-                CanvasColor(Color::Green),
-                CanvasColor(Color::LightGreen),
-                CanvasColor(Color::Blue),
-                CanvasColor(Color::LightBlue),
-                CanvasColor(Color::Yellow),
-                CanvasColor(Color::LightYellow),
-                CanvasColor(Color::Cyan),
-                CanvasColor(Color::LightCyan),
-                CanvasColor(Color::Magenta),
-                CanvasColor(Color::LightMagenta),
+                CanvasColor::White,
+                CanvasColor::Gray,
+                CanvasColor::DarkGray,
+                CanvasColor::Black,
+                CanvasColor::Red,
+                CanvasColor::LightRed,
+                CanvasColor::Green,
+                CanvasColor::LightGreen,
+                CanvasColor::Blue,
+                CanvasColor::LightBlue,
+                CanvasColor::Yellow,
+                CanvasColor::LightYellow,
+                CanvasColor::Cyan,
+                CanvasColor::LightCyan,
+                CanvasColor::Magenta,
+                CanvasColor::LightMagenta,
             ]
             .to_vec(),
         }
@@ -50,35 +46,8 @@ impl AppCanvas {
 }
 
 impl AppCanvas {
-    pub fn apply_mouse_event(&mut self, evt: MouseEvent) -> Option<()> {
-        match evt {
-            MouseEvent::Down(_, x, y, _) => {
-                if y == 0 {
-                    let swatch_size = CANVAS_SIZE.0 / self.palette.len() as usize;
-                    let selected_color = self.palette.get(x as usize / swatch_size);
-                    match selected_color {
-                        Some(color) => self.current_color = color.clone(),
-                        _ => {}
-                    }
-                } else {
-                    self.last_mouse_pos = Some(Coord(x, y));
-                }
-            }
-            MouseEvent::Up(_, _, _, _) => {
-                self.last_mouse_pos = None;
-            }
-            MouseEvent::Drag(_, x, y, _) => {
-                let mouse_pos = Coord(x, y);
-                self.lines.push(AppLine::new(
-                    self.last_mouse_pos.unwrap_or(mouse_pos),
-                    mouse_pos,
-                    self.current_color,
-                ));
-                self.last_mouse_pos = Some(mouse_pos);
-            }
-            _ => {}
-        }
-        Some(())
+    pub fn draw_line(&mut self, line: Line) {
+        self.lines.push(line);
     }
 }
 
@@ -93,6 +62,8 @@ pub struct App {
     pub canvas: AppCanvas,
     pub chat: Chat,
     pub session: ServerSession,
+    pub last_mouse_pos: Option<Coord>,
+    pub current_color: CanvasColor,
 }
 
 impl App {
@@ -100,8 +71,43 @@ impl App {
         App {
             canvas: AppCanvas::new(),
             chat: Chat::default(),
+            last_mouse_pos: None,
+            current_color: CanvasColor::White,
             session,
         }
+    }
+
+    pub async fn handle_mouse_event(&mut self, evt: MouseEvent) -> Result<()> {
+        match evt {
+            MouseEvent::Down(_, x, y, _) => {
+                if y == 0 {
+                    let swatch_size = CANVAS_SIZE.0 / self.canvas.palette.len() as usize;
+                    let selected_color = self.canvas.palette.get(x as usize / swatch_size);
+                    match selected_color {
+                        Some(color) => self.current_color = color.clone(),
+                        _ => {}
+                    }
+                } else {
+                    self.last_mouse_pos = Some(Coord(x, y));
+                }
+            }
+            MouseEvent::Up(_, _, _, _) => {
+                self.last_mouse_pos = None;
+            }
+            MouseEvent::Drag(_, x, y, _) => {
+                let mouse_pos = Coord(x, y);
+                let line = Line::new(
+                    self.last_mouse_pos.unwrap_or(mouse_pos),
+                    mouse_pos,
+                    self.current_color,
+                );
+                self.canvas.draw_line(line);
+                self.session.send(ToServerMsg::NewLine(line)).await?;
+                self.last_mouse_pos = Some(mouse_pos);
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     pub async fn handle_chat_key_event(&mut self, code: &KeyCode) -> Result<()> {
@@ -128,11 +134,20 @@ impl App {
                 self.handle_chat_key_event(&code).await?;
             }
             ClientEvent::MouseInput(mouse_evt) => {
-                self.canvas.apply_mouse_event(mouse_evt);
+                self.handle_mouse_event(mouse_evt).await?;
             }
             ClientEvent::ServerMessage(m) => match m {
                 ToClientMsg::NewMessage(message) => self.chat.messages.push(message),
-                _ => {}
+                ToClientMsg::UserJoined(username) => {}
+                ToClientMsg::NewLine(line) => {
+                    self.canvas.draw_line(line);
+                }
+                ToClientMsg::InitialState {
+                    current_users,
+                    lines,
+                } => {
+                    self.canvas.lines = lines;
+                }
             },
         }
         Ok(())
@@ -144,7 +159,7 @@ impl App {
         mut chan: tokio::sync::mpsc::Receiver<ClientEvent>,
     ) -> Result<()> {
         loop {
-            ui::draw(self, &mut terminal);
+            ui::draw(self, &mut terminal)?;
             let event = chan.recv().await;
             if let Some(event) = event {
                 self.handle_event(event).await?;
@@ -161,12 +176,13 @@ pub struct ServerSession {
 
 impl ServerSession {
     pub async fn establish_connection(
+        addr: &str,
         username: String,
         mut evt_send: tokio::sync::mpsc::Sender<ClientEvent>,
     ) -> Result<ServerSession> {
         let (to_server_send, mut to_server_recv) = tokio::sync::mpsc::channel::<ToServerMsg>(1);
 
-        let ws: WebSocketStream<_> = tokio_tungstenite::connect_async("ws://localhost:8080")
+        let ws: WebSocketStream<_> = tokio_tungstenite::connect_async(addr)
             .await
             .expect("Could not connect to server")
             .0;
