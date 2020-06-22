@@ -2,26 +2,28 @@ use crate::{
     client::error::Result,
     client::ui,
     data::{self, CanvasColor, Coord, Line, Message},
-    message::{ToClientMsg, ToServerMsg},
-    ClientEvent, CANVAS_SIZE,
+    message::{InitialState, ToClientMsg, ToServerMsg},
+    ClientEvent,
 };
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 
 use tokio_tungstenite::WebSocketStream;
-use tui::{backend::Backend, style::Color, Terminal};
+use tui::{backend::Backend, Terminal};
 
 #[derive(Debug, Clone)]
 pub struct AppCanvas {
     pub palette: Vec<CanvasColor>,
     pub lines: Vec<data::Line>,
+    pub dimensions: (usize, usize),
 }
 
 impl AppCanvas {
-    fn new() -> Self {
+    fn new(dimensions: (usize, usize)) -> Self {
         AppCanvas {
             lines: Vec::new(),
+            dimensions,
             palette: [
                 CanvasColor::White,
                 CanvasColor::Gray,
@@ -67,9 +69,9 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(session: ServerSession) -> App {
+    pub fn new(session: ServerSession, initial_state: InitialState) -> App {
         App {
-            canvas: AppCanvas::new(),
+            canvas: AppCanvas::new(initial_state.dimensions),
             chat: Chat::default(),
             last_mouse_pos: None,
             current_color: CanvasColor::White,
@@ -78,10 +80,11 @@ impl App {
     }
 
     pub async fn handle_mouse_event(&mut self, evt: MouseEvent) -> Result<()> {
+        let dimensions = self.canvas.dimensions;
         match evt {
             MouseEvent::Down(_, x, y, _) => {
                 if y == 0 {
-                    let swatch_size = CANVAS_SIZE.0 / self.canvas.palette.len() as usize;
+                    let swatch_size = dimensions.0 / self.canvas.palette.len() as usize;
                     let selected_color = self.canvas.palette.get(x as usize / swatch_size);
                     match selected_color {
                         Some(color) => self.current_color = color.clone(),
@@ -138,16 +141,11 @@ impl App {
             }
             ClientEvent::ServerMessage(m) => match m {
                 ToClientMsg::NewMessage(message) => self.chat.messages.push(message),
-                ToClientMsg::UserJoined(username) => {}
+                ToClientMsg::UserJoined(_username) => {}
                 ToClientMsg::NewLine(line) => {
                     self.canvas.draw_line(line);
                 }
-                ToClientMsg::InitialState {
-                    current_users,
-                    lines,
-                } => {
-                    self.canvas.lines = lines;
-                }
+                ToClientMsg::InitialState(_) => {}
             },
         }
         Ok(())
@@ -179,7 +177,7 @@ impl ServerSession {
         addr: &str,
         username: String,
         mut evt_send: tokio::sync::mpsc::Sender<ClientEvent>,
-    ) -> Result<ServerSession> {
+    ) -> Result<App> {
         let (to_server_send, mut to_server_recv) = tokio::sync::mpsc::channel::<ToServerMsg>(1);
 
         let ws: WebSocketStream<_> = tokio_tungstenite::connect_async(addr)
@@ -192,6 +190,15 @@ impl ServerSession {
             .send(tungstenite::Message::Text(username.clone()))
             .await
             .unwrap();
+
+        let initial_state: InitialState = loop {
+            let msg = ws_recv.next().await;
+            if let Some(Ok(tungstenite::Message::Text(msg))) = msg {
+                if let Ok(ToClientMsg::InitialState(state)) = serde_json::from_str(&msg) {
+                    break state;
+                }
+            }
+        };
 
         tokio::spawn(async move {
             loop {
@@ -217,10 +224,13 @@ impl ServerSession {
                 }
             }
         });
-        Ok(ServerSession {
-            to_server_send,
-            username,
-        })
+        Ok(App::new(
+            ServerSession {
+                to_server_send,
+                username,
+            },
+            initial_state,
+        ))
     }
 
     pub async fn send(&mut self, message: ToServerMsg) -> Result<()> {

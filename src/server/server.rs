@@ -2,11 +2,13 @@
 
 use crate::{
     data,
-    message::{ToClientMsg, ToServerMsg},
+    message::{InitialState, ToClientMsg, ToServerMsg},
 };
+use data::SkribblState;
 use futures_util::{SinkExt, StreamExt};
+use std::io::Read;
 use std::net::SocketAddr;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -15,10 +17,11 @@ use tokio::{
 type Result<T> = std::result::Result<T, ServerError>;
 
 #[derive(Debug)]
-enum ServerError {
+pub enum ServerError {
     UserNotFound(String),
     SendError(String),
     WsError(tungstenite::error::Error),
+    IOError(std::io::Error),
 }
 
 impl<T> From<tokio::sync::mpsc::error::SendError<T>> for ServerError {
@@ -30,6 +33,12 @@ impl<T> From<tokio::sync::mpsc::error::SendError<T>> for ServerError {
 impl From<tungstenite::error::Error> for ServerError {
     fn from(err: tungstenite::error::Error) -> Self {
         ServerError::WsError(err)
+    }
+}
+
+impl From<std::io::Error> for ServerError {
+    fn from(err: std::io::Error) -> Self {
+        ServerError::IOError(err)
     }
 }
 
@@ -56,23 +65,41 @@ impl UserSession {
 }
 
 #[derive(Debug)]
+pub enum GameState {
+    FreeDraw,
+    Skribbl(Vec<String>, Option<SkribblState>),
+}
+
+#[derive(Debug)]
 struct ServerState {
     sessions: HashMap<String, UserSession>,
     pub lines: Vec<data::Line>,
+    pub dimensions: (usize, usize),
+    pub game_state: GameState,
 }
 
 impl ServerState {
-    fn new() -> Self {
+    fn new(game_state: GameState, dimensions: (usize, usize)) -> Self {
         ServerState {
             sessions: HashMap::new(),
             lines: Vec::new(),
+            dimensions,
+            game_state,
         }
     }
     async fn on_message(&mut self, _username: &str, msg: ToServerMsg) -> Result<()> {
         match msg {
             ToServerMsg::NewMessage(message) => {
                 println!("new message: {:?}", message);
-                self.broadcast(ToClientMsg::NewMessage(message)).await?
+                self.broadcast(ToClientMsg::NewMessage(message.clone()))
+                    .await?;
+
+                match &self.game_state {
+                    GameState::FreeDraw => {}
+                    GameState::Skribbl(_words, Some(state))
+                        if message.text == state.current_word => {}
+                    _ => {}
+                }
             }
             ToServerMsg::NewLine(line) => {
                 self.lines.push(line);
@@ -84,10 +111,15 @@ impl ServerState {
 
     pub async fn on_user_joined(&mut self, mut session: UserSession) -> Result<()> {
         session
-            .send(ToClientMsg::InitialState {
-                current_users: self.sessions.keys().map(|x| x.clone()).collect(),
+            .send(ToClientMsg::InitialState(InitialState {
                 lines: self.lines.clone(),
-            })
+                current_users: self
+                    .sessions
+                    .keys()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<String>>(),
+                dimensions: self.dimensions,
+            }))
             .await?;
         self.broadcast(ToClientMsg::UserJoined(session.username.clone()))
             .await?;
@@ -117,18 +149,38 @@ impl ServerState {
     }
 }
 
-pub async fn run_server(addr: &str) {
+pub async fn run_server(
+    addr: &str,
+    dimensions: (usize, usize),
+    word_file: Option<PathBuf>,
+) -> Result<()> {
     println!("Running server on {}", addr);
     let mut server_listener = TcpListener::bind(addr)
         .await
         .expect("Could not start webserver (could not bind)");
 
-    let server_state = Arc::new(Mutex::new(ServerState::new()));
+    let game_state = if let Some(word_file) = word_file {
+        let mut file = std::fs::File::open(word_file)?;
+        let mut words = String::new();
+        file.read_to_string(&mut words)?;
+        GameState::Skribbl(
+            words
+                .lines()
+                .map(|x| x.to_string())
+                .collect::<Vec<String>>(),
+            None,
+        )
+    } else {
+        GameState::FreeDraw
+    };
+
+    let server_state = Arc::new(Mutex::new(ServerState::new(game_state, dimensions)));
 
     while let Ok((stream, _)) = server_listener.accept().await {
         let peer = stream.peer_addr().expect("Peer didn't have an address");
         tokio::spawn(handle_connection(peer, stream, server_state.clone()));
     }
+    Ok(())
 }
 
 async fn handle_connection(
@@ -151,6 +203,7 @@ async fn handle_connection(
     };
 
     let (session_msg_send, mut session_msg_recv) = tokio::sync::mpsc::channel(1);
+
     state
         .lock()
         .await

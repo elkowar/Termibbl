@@ -5,6 +5,12 @@ use tui::style::Color;
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, Serialize, Deserialize)]
 pub struct Coord(pub u16, pub u16);
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SkribblState {
+    pub current_word: String,
+    pub current_user: Option<String>,
+}
+
 impl PartialOrd for Coord {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         if self.0 < other.0 && self.1 < other.1 {
@@ -54,8 +60,8 @@ impl Line {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    user: String,
-    text: String,
+    pub user: String,
+    pub text: String,
 }
 
 impl Message {

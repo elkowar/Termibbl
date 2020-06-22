@@ -2,7 +2,6 @@ use crate::{
     client::app::{App, AppCanvas, Chat},
     client::error::Result,
     data::Coord,
-    CANVAS_SIZE,
 };
 
 use tui::{
@@ -14,6 +13,7 @@ use tui::{
 };
 
 pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
+    let dimensions = app.canvas.dimensions;
     terminal.draw(|mut f| {
         use Constraint::*;
         let size = f.size();
@@ -22,11 +22,11 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
             .margin(0)
             .constraints(
                 [
-                    Length(CANVAS_SIZE.0 as u16),
-                    Length(if size.width < CANVAS_SIZE.0 as u16 {
+                    Length(dimensions.0 as u16),
+                    Length(if size.width < dimensions.0 as u16 {
                         size.width
                     } else {
-                        size.width - CANVAS_SIZE.0 as u16
+                        size.width - dimensions.0 as u16
                     }),
                 ]
                 .as_ref(),
@@ -35,7 +35,7 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
 
         let canvas_area = {
             let mut x = main_chunks[0];
-            x.height = x.height.min(CANVAS_SIZE.1 as u16);
+            x.height = x.height.min(dimensions.1 as u16);
             x
         };
 

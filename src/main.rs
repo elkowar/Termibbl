@@ -4,6 +4,8 @@ pub mod message;
 pub mod server;
 
 use std::io::{stdout, Write};
+use std::path::PathBuf;
+use structopt::StructOpt;
 
 use crossterm::{
     event::{read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseEvent},
@@ -17,22 +19,52 @@ use tui::{backend::CrosstermBackend, Terminal};
 use client::app::ServerSession;
 pub use serde::{Deserialize, Serialize};
 
-pub const CANVAS_SIZE: (usize, usize) = (100, 50);
+#[derive(Debug, StructOpt)]
+#[structopt(name = "Termibbl", about = "A Skribbl.io-alike for the terminal")]
+struct Opt {
+    addr: String,
+    #[structopt(subcommand)]
+    cmd: SubOpt,
+}
+
+#[derive(Debug, StructOpt)]
+enum SubOpt {
+    Server {
+        #[structopt(long = "--words", parse(from_os_str), required_if("freedraw", "true"))]
+        word_file: Option<PathBuf>,
+        #[structopt(short, long, parse(from_str = crate::parse_dimension))]
+        dimensions: (usize, usize),
+    },
+    Client {
+        username: String,
+    },
+}
+
+fn parse_dimension(s: &str) -> (usize, usize) {
+    let mut split = s.split('x');
+    (
+        split.next().unwrap().parse().unwrap(),
+        split.next().unwrap().parse().unwrap(),
+    )
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let addr = std::env::args().nth(1).unwrap();
-    match std::env::args().nth(2) {
-        Some(arg) => {
-            if arg == "--server".to_string() {
-                server::server::run_server(&addr).await;
-            } else {
-                run_client(&addr, arg).await.unwrap();
-            }
-            Ok(())
+    let opt = Opt::from_args();
+    match opt.cmd {
+        SubOpt::Client { username } => {
+            run_client(&opt.addr, username).await.unwrap();
         }
-        _ => Ok(()),
+        SubOpt::Server {
+            word_file,
+            dimensions,
+        } => {
+            server::server::run_server(&opt.addr, dimensions, word_file)
+                .await
+                .unwrap();
+        }
     }
+    Ok(())
 }
 
 pub enum ClientEvent {
@@ -44,10 +76,9 @@ pub enum ClientEvent {
 async fn run_client(addr: &str, username: String) -> client::error::Result<()> {
     let (mut client_evt_send, client_evt_recv) = tokio::sync::mpsc::channel::<ClientEvent>(1);
 
-    let session =
-        ServerSession::establish_connection(addr, username, client_evt_send.clone()).await;
+    let mut app =
+        ServerSession::establish_connection(addr, username, client_evt_send.clone()).await?;
 
-    let mut app = client::app::App::new(session?);
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     execute!(stdout(), EnableMouseCapture)?;
