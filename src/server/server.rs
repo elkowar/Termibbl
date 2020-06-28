@@ -8,11 +8,8 @@ use data::SkribblState;
 use futures_util::{SinkExt, StreamExt};
 use std::io::Read;
 use std::net::SocketAddr;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use tokio::{
-    net::{TcpListener, TcpStream},
-    sync::Mutex,
-};
+use std::{collections::HashMap, path::PathBuf};
+use tokio::net::{TcpListener, TcpStream};
 
 type Result<T> = std::result::Result<T, ServerError>;
 
@@ -40,6 +37,13 @@ impl From<std::io::Error> for ServerError {
     fn from(err: std::io::Error) -> Self {
         ServerError::IOError(err)
     }
+}
+
+#[derive(Debug)]
+enum ServerEvent {
+    ToServerMsg(String, ToServerMsg),
+    UserJoined(UserSession),
+    UserLeft(String),
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +151,20 @@ impl ServerState {
         }
         Ok(())
     }
+
+    async fn run(&mut self, mut evt_recv: tokio::sync::mpsc::Receiver<ServerEvent>) -> Result<()> {
+        loop {
+            if let Some(evt) = evt_recv.recv().await {
+                match evt {
+                    ServerEvent::ToServerMsg(username, msg) => {
+                        self.on_message(&username, msg).await?
+                    }
+                    ServerEvent::UserJoined(session) => self.on_user_joined(session).await?,
+                    ServerEvent::UserLeft(username) => self.on_user_leave(&username).await,
+                }
+            }
+        }
+    }
 }
 
 pub async fn run_server(
@@ -172,11 +190,16 @@ pub async fn run_server(
         GameState::FreeDraw
     };
 
-    let server_state = Arc::new(Mutex::new(ServerState::new(game_state, dimensions)));
+    let (srv_event_send, srv_event_recv) = tokio::sync::mpsc::channel::<ServerEvent>(1);
+    let mut server_state = ServerState::new(game_state, dimensions);
+
+    tokio::spawn(async move {
+        server_state.run(srv_event_recv).await.unwrap();
+    });
 
     while let Ok((stream, _)) = server_listener.accept().await {
         let peer = stream.peer_addr().expect("Peer didn't have an address");
-        tokio::spawn(handle_connection(peer, stream, server_state.clone()));
+        tokio::spawn(handle_connection(peer, stream, srv_event_send.clone()));
     }
     Ok(())
 }
@@ -184,7 +207,7 @@ pub async fn run_server(
 async fn handle_connection(
     peer: SocketAddr,
     stream: TcpStream,
-    state: Arc<Mutex<ServerState>>,
+    mut srv_event_send: tokio::sync::mpsc::Sender<ServerEvent>,
 ) -> Result<()> {
     let ws_stream = tokio_tungstenite::accept_async(stream).await?;
     println!("new WebSocket connection: {}", peer);
@@ -202,10 +225,11 @@ async fn handle_connection(
 
     let (session_msg_send, mut session_msg_recv) = tokio::sync::mpsc::channel(1);
 
-    state
-        .lock()
-        .await
-        .on_user_joined(UserSession::new(username.clone(), session_msg_send))
+    srv_event_send
+        .send(ServerEvent::UserJoined(UserSession::new(
+            username.clone(),
+            session_msg_send,
+        )))
         .await?;
 
     let send_thread = tokio::spawn(async move {
@@ -225,17 +249,18 @@ async fn handle_connection(
 
     loop {
         let msg = ws_receiver.next().await;
-        let mut state = state.lock().await;
         match msg {
             Some(Ok(tungstenite::Message::Text(msg))) => match serde_json::from_str(&msg) {
                 Ok(Some(msg)) => {
-                    state.on_message(&username, msg).await?;
+                    srv_event_send
+                        .send(ServerEvent::ToServerMsg(username.clone(), msg))
+                        .await?;
                 }
                 Ok(None) => {
-                    println!("got none");
+                    eprintln!("got none");
                 }
                 Err(err) => {
-                    println!("{} (msg was: {})", err, msg);
+                    eprintln!("{} (msg was: {})", err, msg);
                 }
             },
             Some(Ok(tungstenite::Message::Close(_))) | Some(Err(_)) | None => break,
@@ -244,6 +269,6 @@ async fn handle_connection(
     }
 
     drop(send_thread);
-    state.lock().await.on_user_leave(&username).await;
+    srv_event_send.send(ServerEvent::UserLeft(username)).await?;
     Ok(())
 }
