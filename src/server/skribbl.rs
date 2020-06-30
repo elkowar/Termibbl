@@ -28,6 +28,10 @@ impl SkribblState {
             .all(|(username, player)| player.has_solved || username == &self.drawing_user)
     }
 
+    pub fn has_solved(&self, username: &Username) -> bool {
+        self.player_states.get(username).map(|x| x.has_solved) == Some(true)
+    }
+
     pub fn remove_user(&mut self, username: &Username) {
         self.player_states.remove(username);
         let left_player_idx = self
@@ -49,20 +53,17 @@ impl SkribblState {
         }
     }
 
-    pub fn next_player(&mut self, word: String) -> Option<&Username> {
+    pub fn next_player(&mut self, word: String) -> &Username {
         self.round_start_time = get_time_now();
-        dbg!(self.round_start_time);
-
         if self.remaining_users.len() == 0 {
-            None
-        } else {
-            self.drawing_user = self.remaining_users.remove(0);
-            self.player_states
-                .iter_mut()
-                .for_each(|(_, player)| player.has_solved = false);
-            self.current_word = word;
-            Some(&self.drawing_user)
+            self.remaining_users = self.player_states.keys().cloned().collect();
         }
+        self.drawing_user = self.remaining_users.remove(0);
+        self.player_states
+            .iter_mut()
+            .for_each(|(_, player)| player.has_solved = false);
+        self.current_word = word;
+        &self.drawing_user
     }
 
     pub fn with_users(users: Vec<Username>, words: &[String]) -> Self {

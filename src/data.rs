@@ -87,6 +87,13 @@ impl Message {
         }
     }
 
+    pub fn is_system(&self) -> bool {
+        match self {
+            Message::SystemMsg(_) => true,
+            _ => false,
+        }
+    }
+
     pub fn username(&self) -> Option<&Username> {
         match self {
             Message::UserMsg(username, _) => Some(username),

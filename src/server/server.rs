@@ -17,7 +17,7 @@ use tokio::{
     sync::Mutex,
 };
 
-const ROUND_DURATION: u64 = 120;
+pub const ROUND_DURATION: u64 = 120;
 
 type Result<T> = std::result::Result<T, ServerError>;
 
@@ -111,7 +111,7 @@ impl ServerState {
     async fn on_new_message(&mut self, username: Username, msg: data::Message) -> Result<()> {
         let mut did_solve = false;
         match self.game_state {
-            GameState::Skribbl(ref words, Some(ref mut state)) => {
+            GameState::Skribbl(ref mut words, Some(ref mut state)) => {
                 let can_guess = state.can_guess(&username);
                 let current_word = &state.current_word;
 
@@ -130,22 +130,21 @@ impl ServerState {
                     if can_guess && msg.text() == current_word {
                         player_state.on_solve();
                         did_solve = true;
-                        let game_over = if state.did_all_solve() {
-                            let next_word = words.choose(&mut rand::thread_rng()).unwrap().clone();
-                            state.next_player(next_word).is_none()
-                        } else {
-                            false
-                        };
+                        if state.did_all_solve() {
+                            *words = words
+                                .into_iter()
+                                .filter(|x| x != &&state.current_word)
+                                .map(|x| x.clone())
+                                .collect();
+                            state.next_player(
+                                words.choose(&mut rand::thread_rng()).unwrap().clone(),
+                            );
+                        }
                         let state = state.clone();
                         let solved_msg = Message::SystemMsg(format!("{} solved it!", username));
                         self.broadcast(ToClientMsg::NewMessage(solved_msg)).await?;
-                        if game_over {
-                            self.broadcast(ToClientMsg::GameOver(state)).await?;
-                            panic!("Game ending not yet really implemented, to lazy rn");
-                        } else {
-                            self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                                .await?;
-                        }
+                        self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                            .await?;
                     }
                 }
             }
@@ -185,19 +184,18 @@ impl ServerState {
 
     pub async fn on_tick(&mut self) -> Result<()> {
         match self.game_state {
-            GameState::Skribbl(ref words, Some(ref mut state)) => {
+            GameState::Skribbl(ref mut words, Some(ref mut state)) => {
                 let elapsed_time = get_time_now() - state.round_start_time;
                 if elapsed_time > ROUND_DURATION {
-                    let next_word = words.choose(&mut rand::thread_rng()).unwrap().clone();
-                    let game_over = state.next_player(next_word).is_none();
+                    *words = words
+                        .into_iter()
+                        .filter(|x| x != &&state.current_word)
+                        .map(|x| x.clone())
+                        .collect();
+                    state.next_player(words.choose(&mut rand::thread_rng()).unwrap().clone());
                     let state = state.clone();
-                    if game_over {
-                        self.broadcast(ToClientMsg::GameOver(state)).await?;
-                        panic!("Game ending not yet really implemented, to lazy rn");
-                    } else {
-                        self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                            .await?;
-                    }
+                    self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                        .await?;
                 }
             }
             _ => {}

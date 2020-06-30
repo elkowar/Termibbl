@@ -9,7 +9,7 @@ use super::Username;
 use tui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout},
-    style::Style,
+    style::{Color, Style},
     widgets::{Block, Borders, List, Paragraph, Text, Widget},
     Terminal,
 };
@@ -58,14 +58,14 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
             let skribbl_widget = SkribblStateWidget::new(
                 &skribbl_state,
                 &app.session.username,
-                Block::default().borders(Borders::ALL),
+                Block::default().borders(Borders::NONE),
             );
             f.render_widget(skribbl_widget, left_chunks[1]);
         }
 
         f.render_widget(canvas_widget, canvas_area);
 
-        let chat_widget = ChatWidget::new(&app.chat, Block::default().borders(Borders::ALL));
+        let chat_widget = ChatWidget::new(&app.chat, Block::default().borders(Borders::NONE));
         f.render_widget(chat_widget, main_chunks[1]);
     })?;
     Ok(())
@@ -133,13 +133,16 @@ impl<'a, 't, 'b> Widget for ChatWidget<'a, 't> {
             .block(Block::default().borders(Borders::ALL).title("Your message"))
             .render(chunks[0], buf);
 
-        List::new(
-            self.chat
-                .messages
-                .iter()
-                .rev()
-                .map(|msg| Text::raw(format!("{}", msg))),
-        )
+        List::new(self.chat.messages.iter().rev().map(|msg| {
+            Text::styled(
+                format!("{}", msg),
+                if msg.is_system() {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                },
+            )
+        }))
         .block(Block::default().borders(Borders::ALL).title("Chat"))
         .render(chunks[1], buf);
     }
@@ -186,13 +189,17 @@ impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
         };
 
         Paragraph::new(
-            [Text::Raw(
+            [Text::Styled(
                 format!(
-                    "{} {}",
-                    self.state.drawing_user,
-                    format!("drawing {}", current_word_representation)
+                    "{} drawing {}",
+                    self.state.drawing_user, current_word_representation
                 )
                 .into(),
+                if is_drawing {
+                    Style::default().bg(Color::Red)
+                } else {
+                    Style::default()
+                },
             )]
             .iter(),
         )
@@ -208,16 +215,14 @@ impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
                             "{}: {} {}",
                             username,
                             player_state.score,
-                            if self.state.player_states.get(username).map(|x| x.has_solved)
-                                == Some(true)
-                            {
+                            if self.state.has_solved(username) {
                                 "Solved!"
                             } else {
                                 ""
                             }
                         ),
                         if self.state.drawing_user == *username {
-                            Style::default().bg(tui::style::Color::Red)
+                            Style::default().bg(tui::style::Color::Cyan)
                         } else {
                             Style::default()
                         },
