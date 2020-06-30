@@ -8,11 +8,13 @@ pub enum ToClientMsg {
     InitialState(InitialState),
     SkribblStateChanged(SkribblState),
     GameOver(SkribblState),
+    ClearCanvas,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ToServerMsg {
     NewMessage(data::Message),
     NewLine(data::Line),
+    ClearCanvas,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

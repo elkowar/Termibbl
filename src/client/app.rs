@@ -84,13 +84,15 @@ impl App {
         }
     }
 
-    pub async fn handle_mouse_event(&mut self, evt: MouseEvent) -> Result<()> {
-        if !self
-            .game_state
+    pub fn is_drawing(&self) -> bool {
+        self.game_state
             .as_ref()
             .map(|x| x.is_drawing(&self.session.username))
             .unwrap_or(true)
-        {
+    }
+
+    pub async fn handle_mouse_event(&mut self, evt: MouseEvent) -> Result<()> {
+        if !self.is_drawing() {
             return Ok(());
         }
 
@@ -133,6 +135,9 @@ impl App {
                 self.chat.input.push(*c);
             }
             KeyCode::Enter => {
+                if self.chat.input.is_empty() {
+                    return Ok(());
+                }
                 let message =
                     Message::UserMsg(self.session.username.clone(), self.chat.input.clone());
                 self.session.send(ToServerMsg::NewMessage(message)).await?;
@@ -140,6 +145,12 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.chat.input.pop();
+            }
+            KeyCode::Delete => {
+                if self.is_drawing() {
+                    self.session.send(ToServerMsg::ClearCanvas).await?;
+                    self.canvas.lines.clear();
+                }
             }
             _ => {}
         }
@@ -161,6 +172,9 @@ impl App {
                 }
                 ToClientMsg::SkribblStateChanged(new_state) => {
                     self.game_state = Some(new_state);
+                }
+                ToClientMsg::ClearCanvas => {
+                    self.canvas.lines.clear();
                 }
                 ToClientMsg::GameOver(state) => {
                     dbg!(state);

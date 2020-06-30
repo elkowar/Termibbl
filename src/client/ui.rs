@@ -169,24 +169,28 @@ impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
         self.block.render(area, buf);
         let area = self.block.inner(area);
 
-        let is_drawing = self.state.drawing_user == *self.username;
-
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(0)
             .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
             .split(area);
 
+        let is_drawing = self.state.drawing_user == *self.username;
+
+        let current_word_representation = if is_drawing {
+            self.state.current_word.to_string()
+        } else {
+            self.state
+                .current_word
+                .replace(|c: char| !c.is_whitespace(), &"?")
+        };
+
         Paragraph::new(
             [Text::Raw(
                 format!(
                     "{} {}",
-                    self.username,
-                    if is_drawing {
-                        format!("drawing {}", self.state.current_word)
-                    } else {
-                        "".to_string()
-                    }
+                    self.state.drawing_user,
+                    format!("drawing {}", current_word_representation)
                 )
                 .into(),
             )]
@@ -199,16 +203,25 @@ impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
                 .player_states
                 .iter()
                 .map(|(username, player_state)| {
-                    Text::raw(format!(
-                        "{}: {} {}",
-                        username,
-                        player_state.score,
+                    Text::styled(
+                        format!(
+                            "{}: {} {}",
+                            username,
+                            player_state.score,
+                            if self.state.player_states.get(username).map(|x| x.has_solved)
+                                == Some(true)
+                            {
+                                "Solved!"
+                            } else {
+                                ""
+                            }
+                        ),
                         if self.state.drawing_user == *username {
-                            "(drawing)"
+                            Style::default().bg(tui::style::Color::Red)
                         } else {
-                            ""
-                        }
-                    ))
+                            Style::default()
+                        },
+                    )
                 }),
         )
         .block(Block::default().borders(Borders::ALL).title("Players"))

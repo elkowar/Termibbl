@@ -1,20 +1,23 @@
 //https://github.com/snapview/tokio-tungstenite/blob/master/examples/server.rs
 
-use super::skribbl::SkribblState;
+use super::skribbl::{get_time_now, SkribblState};
 use crate::{
     data,
     message::{InitialState, ToClientMsg, ToServerMsg},
 };
-use data::Username;
+use data::{Message, Username};
+use futures_timer::Delay;
 use futures_util::{SinkExt, StreamExt};
 use rand::seq::SliceRandom;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
 };
+
+const ROUND_DURATION: u64 = 120;
 
 type Result<T> = std::result::Result<T, ServerError>;
 
@@ -49,6 +52,7 @@ enum ServerEvent {
     ToServerMsg(Username, ToServerMsg),
     UserJoined(UserSession),
     UserLeft(Username),
+    Tick,
 }
 
 #[derive(Debug)]
@@ -111,6 +115,17 @@ impl ServerState {
                 let can_guess = state.can_guess(&username);
                 let current_word = &state.current_word;
 
+                if msg.text().starts_with("!kick ") {
+                    state.player_states.remove(&Username::from(
+                        msg.text().trim_start_matches("!kick ").to_string(),
+                    ));
+
+                    let state = state.clone();
+                    self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                        .await?;
+                    return Ok(());
+                }
+
                 if let Some(player_state) = state.player_states.get_mut(&username) {
                     if can_guess && msg.text() == current_word {
                         player_state.on_solve();
@@ -122,6 +137,8 @@ impl ServerState {
                             false
                         };
                         let state = state.clone();
+                        let solved_msg = Message::SystemMsg(format!("{} solved it!", username));
+                        self.broadcast(ToClientMsg::NewMessage(solved_msg)).await?;
                         if game_over {
                             self.broadcast(ToClientMsg::GameOver(state)).await?;
                             panic!("Game ending not yet really implemented, to lazy rn");
@@ -158,6 +175,32 @@ impl ServerState {
                 self.lines.push(line);
                 self.broadcast(ToClientMsg::NewLine(line)).await?;
             }
+            ToServerMsg::ClearCanvas => {
+                self.lines.clear();
+                self.broadcast(ToClientMsg::ClearCanvas).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn on_tick(&mut self) -> Result<()> {
+        match self.game_state {
+            GameState::Skribbl(ref words, Some(ref mut state)) => {
+                let elapsed_time = get_time_now() - state.round_start_time;
+                if elapsed_time > ROUND_DURATION {
+                    let next_word = words.choose(&mut rand::thread_rng()).unwrap().clone();
+                    let game_over = state.next_player(next_word).is_none();
+                    let state = state.clone();
+                    if game_over {
+                        self.broadcast(ToClientMsg::GameOver(state)).await?;
+                        panic!("Game ending not yet really implemented, to lazy rn");
+                    } else {
+                        self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                            .await?;
+                    }
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -186,6 +229,7 @@ impl ServerState {
         self.sessions.insert(session.username.clone(), session);
         Ok(())
     }
+
     pub async fn on_user_leave(&mut self, username: &Username) {
         println!("user left: {}", username);
         self.sessions.remove(username);
@@ -217,6 +261,7 @@ impl ServerState {
                     }
                     ServerEvent::UserJoined(session) => self.on_user_joined(session).await?,
                     ServerEvent::UserLeft(username) => self.on_user_leave(&username).await,
+                    ServerEvent::Tick => self.on_tick().await?,
                 }
             }
         }
@@ -304,23 +349,26 @@ async fn handle_connection(
     });
 
     loop {
-        let msg = ws_receiver.next().await;
-        match msg {
-            Some(Ok(tungstenite::Message::Text(msg))) => match serde_json::from_str(&msg) {
-                Ok(Some(msg)) => {
-                    srv_event_send
-                        .send(ServerEvent::ToServerMsg(username.clone(), msg))
-                        .await?;
-                }
-                Ok(None) => {
-                    eprintln!("got none");
-                }
-                Err(err) => {
-                    eprintln!("{} (msg was: {})", err, msg);
-                }
-            },
-            Some(Ok(tungstenite::Message::Close(_))) | Some(Err(_)) | None => break,
-            _ => {}
+        let delay = Delay::new(Duration::from_millis(100));
+        tokio::select! {
+            _ = delay => srv_event_send.send(ServerEvent::Tick).await?,
+            msg = ws_receiver.next() => match msg {
+                Some(Ok(tungstenite::Message::Text(msg))) => match serde_json::from_str(&msg) {
+                    Ok(Some(msg)) => {
+                        srv_event_send
+                            .send(ServerEvent::ToServerMsg(username.clone(), msg))
+                            .await?;
+                    }
+                    Ok(None) => {
+                        panic!("Got none. TODO: cannot be bothered to handle this correctly rn");
+                    }
+                    Err(err) => {
+                        eprintln!("{} (msg was: {})", err, msg);
+                    }
+                },
+                Some(Ok(tungstenite::Message::Close(_))) | Some(Err(_)) | None => break,
+                _ => {}
+            }
         }
     }
 

@@ -18,3 +18,4 @@ tokio = { version = "0.2", features = ["full"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
 structopt = { version = "0.3" }
 rand = "0.7.3"
+futures-timer = "3.0.2"

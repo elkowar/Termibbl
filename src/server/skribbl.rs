@@ -2,6 +2,8 @@ use crate::client::Username;
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time;
+use time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SkribblState {
@@ -15,6 +17,8 @@ pub struct SkribblState {
 
     /// states of all the players
     pub player_states: HashMap<Username, PlayerState>,
+
+    pub round_start_time: u64,
 }
 
 impl SkribblState {
@@ -39,11 +43,16 @@ impl SkribblState {
     }
 
     pub fn add_player(&mut self, username: Username) {
-        self.remaining_users.push(username.clone());
-        self.player_states.insert(username, PlayerState::default());
+        if !self.player_states.contains_key(&username) {
+            self.remaining_users.push(username.clone());
+            self.player_states.insert(username, PlayerState::default());
+        }
     }
 
     pub fn next_player(&mut self, word: String) -> Option<&Username> {
+        self.round_start_time = get_time_now();
+        dbg!(self.round_start_time);
+
         if self.remaining_users.len() == 0 {
             None
         } else {
@@ -63,6 +72,7 @@ impl SkribblState {
             drawing_user: users[0].clone(),
             remaining_users: users.iter().cloned().skip(1).collect::<Vec<_>>(),
             player_states: HashMap::new(),
+            round_start_time: get_time_now(),
         };
         for user in users {
             state.player_states.insert(user, PlayerState::default());
@@ -81,6 +91,13 @@ impl SkribblState {
                 .map(|x| x.has_solved)
                 .unwrap_or(false)
     }
+}
+
+pub fn get_time_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
