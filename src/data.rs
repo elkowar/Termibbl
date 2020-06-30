@@ -2,14 +2,29 @@ use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, fmt::Display};
 use tui::style::Color;
 
+#[derive(Eq, PartialEq, Hash, Debug, Clone, Serialize, Deserialize)]
+pub struct Username(String);
+
+impl From<String> for Username {
+    fn from(s: String) -> Self {
+        Username(s)
+    }
+}
+
+impl From<Username> for String {
+    fn from(u: Username) -> Self {
+        u.0
+    }
+}
+
+impl Display for Username {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, Serialize, Deserialize)]
 pub struct Coord(pub u16, pub u16);
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SkribblState {
-    pub current_word: String,
-    pub current_user: Option<String>,
-}
 
 impl PartialOrd for Coord {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -59,20 +74,33 @@ impl Line {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub user: String,
-    pub text: String,
+pub enum Message {
+    SystemMsg(String),
+    UserMsg(Username, String),
 }
 
 impl Message {
-    pub fn new(user: String, text: String) -> Self {
-        Message { user, text }
+    pub fn text(&self) -> &str {
+        match self {
+            Message::SystemMsg(msg) => &msg,
+            Message::UserMsg(_, msg) => &msg,
+        }
+    }
+
+    pub fn username(&self) -> Option<&Username> {
+        match self {
+            Message::UserMsg(username, _) => Some(username),
+            _ => None,
+        }
     }
 }
 
 impl Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.user, self.text)
+        match self {
+            Message::SystemMsg(msg) => write!(f, "{}", msg),
+            Message::UserMsg(user, msg) => write!(f, "{}: {}", user, msg),
+        }
     }
 }
 

@@ -17,6 +17,7 @@ use crossterm::{
 use tui::{backend::CrosstermBackend, Terminal};
 
 use client::app::ServerSession;
+use data::Username;
 pub use serde::{Deserialize, Serialize};
 
 #[derive(Debug, StructOpt)]
@@ -32,7 +33,7 @@ enum SubOpt {
     Server {
         #[structopt(long = "--words", parse(from_os_str), required_if("freedraw", "true"))]
         word_file: Option<PathBuf>,
-        #[structopt(short, long, parse(from_str = crate::parse_dimension))]
+        #[structopt(short, long, help = "<width>x<height>", parse(from_str = crate::parse_dimension))]
         dimensions: (usize, usize),
     },
     Client {
@@ -53,7 +54,7 @@ async fn main() -> Result<()> {
     let opt = Opt::from_args();
     match opt.cmd {
         SubOpt::Client { username } => {
-            run_client(&opt.addr, username).await.unwrap();
+            run_client(&opt.addr, username.into()).await.unwrap();
         }
         SubOpt::Server {
             word_file,
@@ -73,7 +74,7 @@ pub enum ClientEvent {
     ServerMessage(message::ToClientMsg),
 }
 
-async fn run_client(addr: &str, username: String) -> client::error::Result<()> {
+async fn run_client(addr: &str, username: Username) -> client::error::Result<()> {
     let (mut client_evt_send, client_evt_recv) = tokio::sync::mpsc::channel::<ClientEvent>(1);
 
     let mut app =

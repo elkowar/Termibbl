@@ -1,15 +1,20 @@
 //https://github.com/snapview/tokio-tungstenite/blob/master/examples/server.rs
 
+use super::skribbl::SkribblState;
 use crate::{
     data,
     message::{InitialState, ToClientMsg, ToServerMsg},
 };
-use data::SkribblState;
+use data::Username;
 use futures_util::{SinkExt, StreamExt};
+use rand::seq::SliceRandom;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::{collections::HashMap, path::PathBuf};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::Mutex,
+};
 
 type Result<T> = std::result::Result<T, ServerError>;
 
@@ -41,29 +46,27 @@ impl From<std::io::Error> for ServerError {
 
 #[derive(Debug)]
 enum ServerEvent {
-    ToServerMsg(String, ToServerMsg),
+    ToServerMsg(Username, ToServerMsg),
     UserJoined(UserSession),
-    UserLeft(String),
+    UserLeft(Username),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct UserSession {
-    username: String,
-    points: i32,
-    msg_send: tokio::sync::mpsc::Sender<ToClientMsg>,
+    username: Username,
+    msg_send: Mutex<tokio::sync::mpsc::Sender<ToClientMsg>>,
 }
 
 impl UserSession {
-    fn new(username: String, msg_send: tokio::sync::mpsc::Sender<ToClientMsg>) -> Self {
+    fn new(username: Username, msg_send: tokio::sync::mpsc::Sender<ToClientMsg>) -> Self {
         UserSession {
             username,
-            msg_send,
-            points: 0,
+            msg_send: Mutex::new(msg_send),
         }
     }
 
-    async fn send(&mut self, msg: ToClientMsg) -> Result<()> {
-        self.msg_send.send(msg.clone()).await?;
+    async fn send(&self, msg: ToClientMsg) -> Result<()> {
+        self.msg_send.lock().await.send(msg.clone()).await?;
         Ok(())
     }
 }
@@ -74,9 +77,18 @@ pub enum GameState {
     Skribbl(Vec<String>, Option<SkribblState>),
 }
 
+impl GameState {
+    fn skribbl_state(&self) -> Option<&SkribblState> {
+        match self {
+            GameState::Skribbl(_, Some(state)) => Some(state),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ServerState {
-    sessions: HashMap<String, UserSession>,
+    sessions: HashMap<Username, UserSession>,
     pub lines: Vec<data::Line>,
     pub dimensions: (usize, usize),
     pub game_state: GameState,
@@ -91,19 +103,56 @@ impl ServerState {
             game_state,
         }
     }
-    async fn on_message(&mut self, _username: &str, msg: ToServerMsg) -> Result<()> {
+
+    async fn on_new_message(&mut self, username: Username, msg: data::Message) -> Result<()> {
+        let mut did_solve = false;
+        match self.game_state {
+            GameState::Skribbl(ref words, Some(ref mut state)) => {
+                let can_guess = state.can_guess(&username);
+                let current_word = &state.current_word;
+
+                if let Some(player_state) = state.player_states.get_mut(&username) {
+                    if can_guess && msg.text() == current_word {
+                        player_state.on_solve();
+                        did_solve = true;
+                        let game_over = if state.did_all_solve() {
+                            let next_word = words.choose(&mut rand::thread_rng()).unwrap().clone();
+                            state.next_player(next_word).is_none()
+                        } else {
+                            false
+                        };
+                        let state = state.clone();
+                        if game_over {
+                            self.broadcast(ToClientMsg::GameOver(state)).await?;
+                            panic!("Game ending not yet really implemented, to lazy rn");
+                        } else {
+                            self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                                .await?;
+                        }
+                    }
+                }
+            }
+            GameState::Skribbl(ref words, None) => {
+                let skribbl_state =
+                    SkribblState::with_users(self.sessions.keys().cloned().collect(), &words);
+                self.game_state = GameState::Skribbl(words.clone(), Some(skribbl_state.clone()));
+                self.broadcast(ToClientMsg::SkribblStateChanged(skribbl_state))
+                    .await?;
+            }
+            GameState::FreeDraw => {}
+        }
+
+        if !did_solve {
+            self.broadcast(ToClientMsg::NewMessage(msg)).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn on_to_srv_msg(&mut self, username: Username, msg: ToServerMsg) -> Result<()> {
         match msg {
             ToServerMsg::NewMessage(message) => {
-                println!("new message: {:?}", message);
-                self.broadcast(ToClientMsg::NewMessage(message.clone()))
-                    .await?;
-
-                match &self.game_state {
-                    GameState::FreeDraw => {}
-                    GameState::Skribbl(_words, Some(state))
-                        if message.text == state.current_word => {}
-                    _ => {}
-                }
+                self.on_new_message(username, message).await?;
             }
             ToServerMsg::NewLine(line) => {
                 self.lines.push(line);
@@ -113,40 +162,47 @@ impl ServerState {
         Ok(())
     }
 
-    pub async fn on_user_joined(&mut self, mut session: UserSession) -> Result<()> {
+    pub async fn on_user_joined(&mut self, session: UserSession) -> Result<()> {
+        match self.game_state {
+            GameState::Skribbl(_, Some(ref mut state)) => {
+                state.add_player(session.username.clone());
+                let state = state.clone();
+                self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                    .await?;
+
+                let joined_msg = data::Message::SystemMsg(format!("{} joined", session.username));
+                self.broadcast(ToClientMsg::NewMessage(joined_msg)).await?;
+            }
+            _ => {}
+        }
+
         session
             .send(ToClientMsg::InitialState(InitialState {
                 lines: self.lines.clone(),
-                current_users: self
-                    .sessions
-                    .keys()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<String>>(),
+                skribbl_state: self.game_state.skribbl_state().cloned(),
                 dimensions: self.dimensions,
             }))
-            .await?;
-        self.broadcast(ToClientMsg::UserJoined(session.username.clone()))
             .await?;
         self.sessions.insert(session.username.clone(), session);
         Ok(())
     }
-    pub async fn on_user_leave(&mut self, username: &str) {
+    pub async fn on_user_leave(&mut self, username: &Username) {
         println!("user left: {}", username);
         self.sessions.remove(username);
     }
 
     #[allow(unused)]
-    pub async fn send_to(&mut self, user: &str, msg: ToClientMsg) -> Result<()> {
+    pub async fn send_to(&self, user: &Username, msg: ToClientMsg) -> Result<()> {
         self.sessions
-            .get_mut(user)
+            .get(user)
             .ok_or(ServerError::UserNotFound(user.to_string()))?
             .send(msg)
             .await?;
         Ok(())
     }
 
-    async fn broadcast(&mut self, msg: ToClientMsg) -> Result<()> {
-        for (_, session) in self.sessions.iter_mut() {
+    async fn broadcast(&self, msg: ToClientMsg) -> Result<()> {
+        for (_, session) in self.sessions.iter() {
             session.send(msg.clone()).await?;
         }
         Ok(())
@@ -156,8 +212,8 @@ impl ServerState {
         loop {
             if let Some(evt) = evt_recv.recv().await {
                 match evt {
-                    ServerEvent::ToServerMsg(username, msg) => {
-                        self.on_message(&username, msg).await?
+                    ServerEvent::ToServerMsg(name, msg) => {
+                        self.on_to_srv_msg(name.into(), msg).await?
                     }
                     ServerEvent::UserJoined(session) => self.on_user_joined(session).await?,
                     ServerEvent::UserLeft(username) => self.on_user_leave(&username).await,
@@ -183,7 +239,7 @@ pub async fn run_server(
         file.read_to_string(&mut words)?;
         let words = words
             .lines()
-            .map(|x| x.to_string())
+            .map(|x| x.trim().to_string())
             .collect::<Vec<String>>();
         GameState::Skribbl(words, None)
     } else {
@@ -213,13 +269,13 @@ async fn handle_connection(
     println!("new WebSocket connection: {}", peer);
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-    let username = loop {
+    let username: Username = loop {
         let msg = ws_receiver
             .next()
             .await
             .expect("No username message received")?;
         if let tungstenite::Message::Text(username) = msg {
-            break username;
+            break username.into();
         }
     };
 

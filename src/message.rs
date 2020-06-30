@@ -1,12 +1,13 @@
-use crate::data;
+use crate::{data, server::skribbl::SkribblState};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ToClientMsg {
-    UserJoined(String),
     NewMessage(data::Message),
     NewLine(data::Line),
     InitialState(InitialState),
+    SkribblStateChanged(SkribblState),
+    GameOver(SkribblState),
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ToServerMsg {
@@ -17,6 +18,6 @@ pub enum ToServerMsg {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InitialState {
     pub lines: Vec<data::Line>,
-    pub current_users: Vec<String>,
     pub dimensions: (usize, usize),
+    pub skribbl_state: Option<SkribblState>,
 }

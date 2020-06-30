@@ -1038,6 +1038,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "line_drawing",
+ "rand",
  "serde",
  "serde_json",
  "structopt",

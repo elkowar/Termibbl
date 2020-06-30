@@ -2,8 +2,10 @@ use crate::{
     client::app::{App, AppCanvas, Chat},
     client::error::Result,
     data::Coord,
+    server::skribbl::SkribblState,
 };
 
+use super::Username;
 use tui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout},
@@ -33,8 +35,14 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
             )
             .split(size);
 
+        let left_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(0)
+            .constraints([Length(dimensions.1 as u16), Percentage(100)].as_ref())
+            .split(main_chunks[0]);
+
         let canvas_area = {
-            let mut x = main_chunks[0];
+            let mut x = left_chunks[0];
             x.height = x.height.min(dimensions.1 as u16);
             x
         };
@@ -45,6 +53,16 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
                 .borders(Borders::ALL)
                 .border_style(Style::default().bg(app.current_color.into())),
         );
+
+        if let Some(skribbl_state) = app.game_state.as_mut() {
+            let skribbl_widget = SkribblStateWidget::new(
+                &skribbl_state,
+                &app.session.username,
+                Block::default().borders(Borders::ALL),
+            );
+            f.render_widget(skribbl_widget, left_chunks[1]);
+        }
+
         f.render_widget(canvas_widget, canvas_area);
 
         let chat_widget = ChatWidget::new(&app.chat, Block::default().borders(Borders::ALL));
@@ -123,6 +141,77 @@ impl<'a, 't, 'b> Widget for ChatWidget<'a, 't> {
                 .map(|msg| Text::raw(format!("{}", msg))),
         )
         .block(Block::default().borders(Borders::ALL).title("Chat"))
+        .render(chunks[1], buf);
+    }
+}
+
+pub struct SkribblStateWidget<'a, 't> {
+    block: Block<'a>,
+    state: &'t SkribblState,
+    username: &'t Username,
+}
+impl<'a, 't> SkribblStateWidget<'a, 't> {
+    pub fn new(
+        state: &'t SkribblState,
+        username: &'t Username,
+        block: Block<'a>,
+    ) -> SkribblStateWidget<'a, 't> {
+        SkribblStateWidget {
+            block,
+            state,
+            username,
+        }
+    }
+}
+
+impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
+    fn render(self, area: tui::layout::Rect, buf: &mut tui::buffer::Buffer) {
+        self.block.render(area, buf);
+        let area = self.block.inner(area);
+
+        let is_drawing = self.state.drawing_user == *self.username;
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(0)
+            .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
+            .split(area);
+
+        Paragraph::new(
+            [Text::Raw(
+                format!(
+                    "{} {}",
+                    self.username,
+                    if is_drawing {
+                        format!("drawing {}", self.state.current_word)
+                    } else {
+                        "".to_string()
+                    }
+                )
+                .into(),
+            )]
+            .iter(),
+        )
+        .render(chunks[0], buf);
+
+        List::new(
+            self.state
+                .player_states
+                .iter()
+                .map(|(username, player_state)| {
+                    Text::raw(format!(
+                        "{}: {} {}",
+                        username,
+                        player_state.score,
+                        if self.state.drawing_user == *username {
+                            "(drawing)"
+                        } else {
+                            ""
+                        }
+                    ))
+                }),
+        )
+        .block(Block::default().borders(Borders::ALL).title("Players"))
         .render(chunks[1], buf);
     }
 }

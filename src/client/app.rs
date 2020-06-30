@@ -3,14 +3,35 @@ use crate::{
     client::ui,
     data::{self, CanvasColor, Coord, Line, Message},
     message::{InitialState, ToClientMsg, ToServerMsg},
+    server::skribbl::SkribblState,
     ClientEvent,
 };
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 
+use data::Username;
 use tokio_tungstenite::WebSocketStream;
 use tui::{backend::Backend, Terminal};
+
+const PALETTE: [CanvasColor; 16] = [
+    CanvasColor::White,
+    CanvasColor::Gray,
+    CanvasColor::DarkGray,
+    CanvasColor::Black,
+    CanvasColor::Red,
+    CanvasColor::LightRed,
+    CanvasColor::Green,
+    CanvasColor::LightGreen,
+    CanvasColor::Blue,
+    CanvasColor::LightBlue,
+    CanvasColor::Yellow,
+    CanvasColor::LightYellow,
+    CanvasColor::Cyan,
+    CanvasColor::LightCyan,
+    CanvasColor::Magenta,
+    CanvasColor::LightMagenta,
+];
 
 #[derive(Debug, Clone)]
 pub struct AppCanvas {
@@ -22,27 +43,9 @@ pub struct AppCanvas {
 impl AppCanvas {
     fn new(dimensions: (usize, usize), lines: Vec<data::Line>) -> Self {
         AppCanvas {
-            lines: lines,
+            lines,
             dimensions,
-            palette: [
-                CanvasColor::White,
-                CanvasColor::Gray,
-                CanvasColor::DarkGray,
-                CanvasColor::Black,
-                CanvasColor::Red,
-                CanvasColor::LightRed,
-                CanvasColor::Green,
-                CanvasColor::LightGreen,
-                CanvasColor::Blue,
-                CanvasColor::LightBlue,
-                CanvasColor::Yellow,
-                CanvasColor::LightYellow,
-                CanvasColor::Cyan,
-                CanvasColor::LightCyan,
-                CanvasColor::Magenta,
-                CanvasColor::LightMagenta,
-            ]
-            .to_vec(),
+            palette: PALETTE.to_vec(),
         }
     }
 }
@@ -59,13 +62,14 @@ pub struct Chat {
     pub messages: Vec<Message>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct App {
     pub canvas: AppCanvas,
     pub chat: Chat,
     pub session: ServerSession,
     pub last_mouse_pos: Option<Coord>,
     pub current_color: CanvasColor,
+    pub game_state: Option<SkribblState>,
 }
 
 impl App {
@@ -75,11 +79,21 @@ impl App {
             chat: Chat::default(),
             last_mouse_pos: None,
             current_color: CanvasColor::White,
+            game_state: initial_state.skribbl_state,
             session,
         }
     }
 
     pub async fn handle_mouse_event(&mut self, evt: MouseEvent) -> Result<()> {
+        if !self
+            .game_state
+            .as_ref()
+            .map(|x| x.is_drawing(&self.session.username))
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+
         let dimensions = self.canvas.dimensions;
         match evt {
             MouseEvent::Down(_, x, y, _) => {
@@ -119,7 +133,8 @@ impl App {
                 self.chat.input.push(*c);
             }
             KeyCode::Enter => {
-                let message = Message::new(self.session.username.clone(), self.chat.input.clone());
+                let message =
+                    Message::UserMsg(self.session.username.clone(), self.chat.input.clone());
                 self.session.send(ToServerMsg::NewMessage(message)).await?;
                 self.chat.input = String::new();
             }
@@ -141,9 +156,15 @@ impl App {
             }
             ClientEvent::ServerMessage(m) => match m {
                 ToClientMsg::NewMessage(message) => self.chat.messages.push(message),
-                ToClientMsg::UserJoined(_username) => {}
                 ToClientMsg::NewLine(line) => {
                     self.canvas.draw_line(line);
+                }
+                ToClientMsg::SkribblStateChanged(new_state) => {
+                    self.game_state = Some(new_state);
+                }
+                ToClientMsg::GameOver(state) => {
+                    dbg!(state);
+                    panic!("Game over, I couldn't yet be bothered to implement this in a better way yet,...");
                 }
                 ToClientMsg::InitialState(_) => {}
             },
@@ -169,13 +190,13 @@ impl App {
 #[derive(Debug, Clone)]
 pub struct ServerSession {
     to_server_send: tokio::sync::mpsc::Sender<ToServerMsg>,
-    username: String,
+    pub username: Username,
 }
 
 impl ServerSession {
     pub async fn establish_connection(
         addr: &str,
-        username: String,
+        username: Username,
         mut evt_send: tokio::sync::mpsc::Sender<ClientEvent>,
     ) -> Result<App> {
         let (to_server_send, mut to_server_recv) = tokio::sync::mpsc::channel::<ToServerMsg>(1);
@@ -187,7 +208,7 @@ impl ServerSession {
         let (mut ws_send, mut ws_recv) = ws.split();
 
         ws_send
-            .send(tungstenite::Message::Text(username.clone()))
+            .send(tungstenite::Message::Text(username.clone().into()))
             .await
             .unwrap();
 
