@@ -19,3 +19,7 @@ futures-util = { version = "0.3", default-features = false, features = ["async-a
 structopt = { version = "0.3" }
 rand = "0.7.3"
 futures-timer = "3.0.2"
+
+
+[profile.release]
+lto = true

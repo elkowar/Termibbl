@@ -124,10 +124,10 @@ impl ServerState {
         self.sessions.remove(username).map(|x| x.close());
         match self.game_state {
             GameState::Skribbl(ref mut state) => {
+                state.remove_user(username);
                 if state.drawing_user == *username {
                     state.next_turn();
                 }
-                state.player_states.remove(username);
                 let state = state.clone();
                 self.broadcast(ToClientMsg::SkribblStateChanged(state))
                     .await?;

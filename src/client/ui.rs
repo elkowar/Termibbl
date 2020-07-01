@@ -8,7 +8,7 @@ use crate::{
 use super::Username;
 use tui::{
     backend::Backend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, List, Paragraph, Text, Widget},
     Terminal,
@@ -64,7 +64,11 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
             f.render_widget(skribbl_widget, sidebar_chunks[0]);
         }
 
-        f.render_widget(canvas_widget, main_chunks[0]);
+        let canvas_rect = Rect {
+            height: u16::min(dimensions.1 as u16, main_chunks[0].height),
+            ..main_chunks[0]
+        };
+        f.render_widget(canvas_widget, canvas_rect);
 
         let chat_widget = ChatWidget::new(&app.chat, Block::default().borders(Borders::NONE));
         f.render_widget(chat_widget, sidebar_chunks[1]);
