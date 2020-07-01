@@ -166,6 +166,7 @@ impl ServerState {
                         self.broadcast_system_msg(format!("{} guessed it!", username))
                             .await?;
                         if all_solved {
+                            self.lines.clear();
                             self.broadcast(ToClientMsg::ClearCanvas).await?;
                             self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
                                 .await?;
@@ -223,6 +224,7 @@ impl ServerState {
                 let state = state.clone();
                 self.broadcast(ToClientMsg::SkribblStateChanged(state))
                     .await?;
+                self.lines.clear();
                 self.broadcast(ToClientMsg::ClearCanvas).await?;
                 self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
                     .await?;
