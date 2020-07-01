@@ -127,7 +127,7 @@ impl ServerState {
                 }
 
                 if let Some(player_state) = state.player_states.get_mut(&username) {
-                    if can_guess && msg.text() == current_word {
+                    if can_guess && &msg.text().to_lowercase() == &current_word.to_lowercase() {
                         player_state.on_solve();
                         did_solve = true;
                         if state.did_all_solve() {
@@ -283,6 +283,7 @@ pub async fn run_server(
         let words = words
             .lines()
             .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
             .collect::<Vec<String>>();
         GameState::Skribbl(words, None)
     } else {
