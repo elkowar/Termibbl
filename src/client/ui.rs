@@ -2,10 +2,7 @@ use crate::{
     client::app::{App, AppCanvas, Chat},
     client::error::Result,
     data::Coord,
-    server::{
-        server::ROUND_DURATION,
-        skribbl::{get_time_now, SkribblState},
-    },
+    server::skribbl::SkribblState,
 };
 
 use super::Username;
@@ -38,18 +35,6 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
             )
             .split(size);
 
-        let left_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(0)
-            .constraints([Length(dimensions.1 as u16), Percentage(100)].as_ref())
-            .split(main_chunks[0]);
-
-        let canvas_area = {
-            let mut x = left_chunks[0];
-            x.height = x.height.min(dimensions.1 as u16);
-            x
-        };
-
         let canvas_widget = CanvasWidget::new(
             &app.canvas,
             Block::default()
@@ -57,19 +42,32 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
                 .border_style(Style::default().bg(app.current_color.into())),
         );
 
+        let game_state_height = app
+            .game_state
+            .as_ref()
+            .map(|x| x.player_states.len() + 3)
+            .unwrap_or(0) as u16;
+
+        let sidebar_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(0)
+            .constraints([Length(game_state_height), Percentage(100)].as_ref())
+            .split(main_chunks[1]);
+
         if let Some(skribbl_state) = app.game_state.as_mut() {
             let skribbl_widget = SkribblStateWidget::new(
                 &skribbl_state,
                 &app.session.username,
+                app.remaining_time.unwrap_or(0),
                 Block::default().borders(Borders::NONE),
             );
-            f.render_widget(skribbl_widget, left_chunks[1]);
+            f.render_widget(skribbl_widget, sidebar_chunks[0]);
         }
 
-        f.render_widget(canvas_widget, canvas_area);
+        f.render_widget(canvas_widget, main_chunks[0]);
 
         let chat_widget = ChatWidget::new(&app.chat, Block::default().borders(Borders::NONE));
-        f.render_widget(chat_widget, main_chunks[1]);
+        f.render_widget(chat_widget, sidebar_chunks[1]);
     })?;
     Ok(())
 }
@@ -155,17 +153,20 @@ pub struct SkribblStateWidget<'a, 't> {
     block: Block<'a>,
     state: &'t SkribblState,
     username: &'t Username,
+    remaining_time: u32,
 }
 impl<'a, 't> SkribblStateWidget<'a, 't> {
     pub fn new(
         state: &'t SkribblState,
         username: &'t Username,
+        remaining_time: u32,
         block: Block<'a>,
     ) -> SkribblStateWidget<'a, 't> {
         SkribblStateWidget {
             block,
             state,
             username,
+            remaining_time,
         }
     }
 }
@@ -191,31 +192,19 @@ impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
                 .replace(|c: char| !c.is_whitespace(), &"?")
         };
 
-        let time_text = Text::Styled(
-            format!(
-                "{}s",
-                ROUND_DURATION - (get_time_now() - self.state.round_start_time)
-            )
-            .into(),
-            Style::default().fg(Color::Blue),
-        );
-
         Paragraph::new(
-            [
-                time_text,
-                Text::Styled(
-                    format!(
-                        "{} drawing {}",
-                        self.state.drawing_user, current_word_representation
-                    )
-                    .into(),
-                    if is_drawing {
-                        Style::default().bg(Color::Red)
-                    } else {
-                        Style::default()
-                    },
-                ),
-            ]
+            [Text::Styled(
+                format!(
+                    "{} drawing {}",
+                    self.state.drawing_user, current_word_representation
+                )
+                .into(),
+                if is_drawing {
+                    Style::default().bg(Color::Red)
+                } else {
+                    Style::default()
+                },
+            )]
             .iter(),
         )
         .render(chunks[0], buf);
@@ -244,7 +233,11 @@ impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
                     )
                 }),
         )
-        .block(Block::default().borders(Borders::ALL).title("Players"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(&format!("Players [time: {}]", self.remaining_time)),
+        )
         .render(chunks[1], buf);
     }
 }

@@ -138,7 +138,6 @@ impl ServerState {
     }
 
     async fn on_command_msg(&mut self, _username: &Username, msg: &CommandMsg) -> Result<()> {
-        dbg!(msg);
         match msg {
             CommandMsg::KickPlayer(kicked_player) => self.remove_player(kicked_player).await?,
         }
@@ -156,14 +155,21 @@ impl ServerState {
                     if can_guess && msg.text().eq_ignore_ascii_case(&current_word) {
                         player_state.on_solve();
                         did_solve = true;
-                        if state.did_all_solve() {
+                        let all_solved = state.did_all_solve();
+                        let old_word = state.current_word.clone();
+                        if all_solved {
                             state.next_turn();
                         }
                         let state = state.clone();
-                        self.broadcast_system_msg(format!("{} guessed it!", username))
-                            .await?;
                         self.broadcast(ToClientMsg::SkribblStateChanged(state))
                             .await?;
+                        self.broadcast_system_msg(format!("{} guessed it!", username))
+                            .await?;
+                        if all_solved {
+                            self.broadcast(ToClientMsg::ClearCanvas).await?;
+                            self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
+                                .await?;
+                        }
                     }
                 }
             }
@@ -210,12 +216,19 @@ impl ServerState {
     pub async fn on_tick(&mut self) -> Result<()> {
         if let GameState::Skribbl(ref mut state) = self.game_state {
             let elapsed_time = get_time_now() - state.round_start_time;
-            if elapsed_time > ROUND_DURATION {
+            let remaining_time = ROUND_DURATION - elapsed_time;
+            if remaining_time <= 0 {
+                let old_word = state.current_word.clone();
                 state.next_turn();
                 let state = state.clone();
                 self.broadcast(ToClientMsg::SkribblStateChanged(state))
                     .await?;
+                self.broadcast(ToClientMsg::ClearCanvas).await?;
+                self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
+                    .await?;
             }
+            self.broadcast(ToClientMsg::TimeChanged(remaining_time as u32))
+                .await?;
         }
         Ok(())
     }
@@ -371,7 +384,7 @@ async fn handle_connection(
     // TODO look at stream forwarding for this
     // forward other events to the main server thread
     loop {
-        let delay = Delay::new(Duration::from_millis(100));
+        let delay = Delay::new(Duration::from_millis(500));
         tokio::select! {
             // every 100ms, send a tick event to the main server thread
             _ = delay => srv_event_send.send(ServerEvent::Tick).await?,

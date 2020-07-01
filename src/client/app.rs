@@ -11,8 +11,6 @@ use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 
 use data::{CommandMsg, Username};
-use futures_timer::Delay;
-use std::time::Duration;
 use tokio_tungstenite::WebSocketStream;
 use tui::{backend::Backend, Terminal};
 
@@ -72,6 +70,7 @@ pub struct App {
     pub last_mouse_pos: Option<Coord>,
     pub current_color: CanvasColor,
     pub game_state: Option<SkribblState>,
+    pub remaining_time: Option<u32>,
 }
 
 impl App {
@@ -83,6 +82,7 @@ impl App {
             current_color: CanvasColor::White,
             game_state: initial_state.skribbl_state,
             session,
+            remaining_time: None,
         }
     }
 
@@ -180,6 +180,9 @@ impl App {
                 self.handle_mouse_event(mouse_evt).await?;
             }
             ClientEvent::ServerMessage(m) => match m {
+                ToClientMsg::TimeChanged(new_time) => {
+                    self.remaining_time = Some(new_time);
+                }
                 ToClientMsg::NewMessage(message) => self.chat.messages.push(message),
                 ToClientMsg::NewLine(line) => {
                     self.canvas.draw_line(line);
@@ -207,13 +210,10 @@ impl App {
     ) -> Result<()> {
         loop {
             ui::draw(self, &mut terminal)?;
-
-            let delay = Delay::new(Duration::from_millis(100));
-            tokio::select! {
-                Some(event) = chan.recv() => {
-                    self.handle_event(event).await?;
-                },
-                _ = delay => {}
+            if let Some(event) = chan.recv().await {
+                self.handle_event(event).await?;
+            } else {
+                break Ok(());
             }
         }
     }

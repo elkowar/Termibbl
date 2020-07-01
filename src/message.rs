@@ -9,6 +9,7 @@ pub enum ToClientMsg {
     SkribblStateChanged(SkribblState),
     GameOver(SkribblState),
     ClearCanvas,
+    TimeChanged(u32),
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ToServerMsg {
