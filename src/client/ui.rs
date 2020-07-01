@@ -2,7 +2,10 @@ use crate::{
     client::app::{App, AppCanvas, Chat},
     client::error::Result,
     data::Coord,
-    server::skribbl::SkribblState,
+    server::{
+        server::ROUND_DURATION,
+        skribbl::{get_time_now, SkribblState},
+    },
 };
 
 use super::Username;
@@ -188,19 +191,31 @@ impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
                 .replace(|c: char| !c.is_whitespace(), &"?")
         };
 
+        let time_text = Text::Styled(
+            format!(
+                "{}s",
+                ROUND_DURATION - (get_time_now() - self.state.round_start_time)
+            )
+            .into(),
+            Style::default().fg(Color::Blue),
+        );
+
         Paragraph::new(
-            [Text::Styled(
-                format!(
-                    "{} drawing {}",
-                    self.state.drawing_user, current_word_representation
-                )
-                .into(),
-                if is_drawing {
-                    Style::default().bg(Color::Red)
-                } else {
-                    Style::default()
-                },
-            )]
+            [
+                time_text,
+                Text::Styled(
+                    format!(
+                        "{} drawing {}",
+                        self.state.drawing_user, current_word_representation
+                    )
+                    .into(),
+                    if is_drawing {
+                        Style::default().bg(Color::Red)
+                    } else {
+                        Style::default()
+                    },
+                ),
+            ]
             .iter(),
         )
         .render(chunks[0], buf);

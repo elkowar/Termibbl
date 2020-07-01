@@ -11,6 +11,8 @@ use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 
 use data::{CommandMsg, Username};
+use futures_timer::Delay;
+use std::time::Duration;
 use tokio_tungstenite::WebSocketStream;
 use tui::{backend::Backend, Terminal};
 
@@ -204,9 +206,13 @@ impl App {
     ) -> Result<()> {
         loop {
             ui::draw(self, &mut terminal)?;
-            let event = chan.recv().await;
-            if let Some(event) = event {
-                self.handle_event(event).await?;
+
+            let delay = Delay::new(Duration::from_millis(100));
+            tokio::select! {
+                Some(event) = chan.recv() => {
+                    self.handle_event(event).await?;
+                },
+                _ = delay => {}
             }
         }
     }
