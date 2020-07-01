@@ -1,6 +1,6 @@
 //https://github.com/snapview/tokio-tungstenite/blob/master/examples/server.rs
 
-use super::skribbl::{get_time_now, SkribblState};
+use super::skribbl::SkribblState;
 use crate::{
     data,
     message::{InitialState, ToClientMsg, ToServerMsg},
@@ -149,15 +149,22 @@ impl ServerState {
         match self.game_state {
             GameState::Skribbl(ref mut state) => {
                 let can_guess = state.can_guess(&username);
+                let remaining_time = state.remaining_time();
                 let current_word = &state.current_word;
 
                 if let Some(player_state) = state.player_states.get_mut(&username) {
                     if can_guess && msg.text().eq_ignore_ascii_case(&current_word) {
-                        player_state.on_solve();
+                        player_state.on_solve(remaining_time);
                         did_solve = true;
                         let all_solved = state.did_all_solve();
                         let old_word = state.current_word.clone();
                         if all_solved {
+                            if let Some(ref mut drawing_user) =
+                                state.player_states.get_mut(&state.drawing_user)
+                            {
+                                drawing_user.score += 50;
+                                drawing_user.on_solve(remaining_time);
+                            }
                             state.next_turn();
                         }
                         let state = state.clone();
@@ -216,10 +223,13 @@ impl ServerState {
 
     pub async fn on_tick(&mut self) -> Result<()> {
         if let GameState::Skribbl(ref mut state) = self.game_state {
-            let elapsed_time = get_time_now() - state.round_start_time;
-            let remaining_time = ROUND_DURATION - elapsed_time;
+            let remaining_time = state.remaining_time();
             if remaining_time <= 0 {
                 let old_word = state.current_word.clone();
+                if let Some(ref mut drawing_user) = state.player_states.get_mut(&state.drawing_user)
+                {
+                    drawing_user.score += 50;
+                }
                 state.next_turn();
                 let state = state.clone();
                 self.broadcast(ToClientMsg::SkribblStateChanged(state))

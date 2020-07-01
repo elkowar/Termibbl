@@ -1,3 +1,4 @@
+use super::server::ROUND_DURATION;
 use crate::client::Username;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,11 @@ pub struct SkribblState {
 }
 
 impl SkribblState {
+    pub fn remaining_time(&self) -> u32 {
+        let elapsed_time = get_time_now() - self.round_start_time;
+        (ROUND_DURATION - elapsed_time) as u32
+    }
+
     pub fn did_all_solve(&self) -> bool {
         self.player_states
             .iter()
@@ -122,8 +128,12 @@ impl Default for PlayerState {
 }
 
 impl PlayerState {
-    pub fn on_solve(&mut self) {
-        self.score += 100;
+    pub fn on_solve(&mut self, remaining_time: u32) {
+        self.score += calculate_score_increase(remaining_time);
         self.has_solved = true;
     }
+}
+
+pub fn calculate_score_increase(remaining_time: u32) -> u32 {
+    50 + (((remaining_time as f64 / ROUND_DURATION as f64) * 100f64) as u32 / 2u32)
 }
