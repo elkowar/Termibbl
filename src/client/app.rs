@@ -136,6 +136,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if self.chat.input.trim().is_empty() {
+                    self.chat.input = String::new();
                     return Ok(());
                 }
                 let message =
