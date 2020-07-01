@@ -2,7 +2,7 @@ use crate::{
     client::app::{App, AppCanvas, Chat},
     client::error::Result,
     data::Coord,
-    server::skribbl::SkribblState,
+    server::skribbl::{PlayerState, SkribblState},
 };
 
 use super::Username;
@@ -39,7 +39,7 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
             &app.canvas,
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().bg(app.current_color.into())),
+                .border_style(Style::default().fg(app.current_color.into())),
         );
 
         let game_state_height = app
@@ -209,24 +209,23 @@ impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
         )
         .render(chunks[0], buf);
 
+        let mut sorted_player_entries = self
+            .state
+            .player_states
+            .iter()
+            .collect::<Vec<(&Username, &PlayerState)>>();
+        sorted_player_entries.sort_by_key(|(x, _)| *x);
+
         List::new(
-            self.state
-                .player_states
-                .iter()
+            sorted_player_entries
+                .into_iter()
                 .map(|(username, player_state)| {
                     Text::styled(
-                        format!(
-                            "{}: {} {}",
-                            username,
-                            player_state.score,
-                            if self.state.has_solved(username) {
-                                "Solved!"
-                            } else {
-                                ""
-                            }
-                        ),
+                        format!("{}: {}", username, player_state.score,),
                         if self.state.drawing_user == *username {
                             Style::default().bg(tui::style::Color::Cyan)
+                        } else if self.state.has_solved(username) {
+                            Style::default().fg(tui::style::Color::Green)
                         } else {
                             Style::default()
                         },

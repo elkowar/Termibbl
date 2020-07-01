@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, fmt::Display};
 use tui::style::Color;
 
-#[derive(Eq, PartialEq, Hash, Debug, Clone, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Hash, Debug, Clone, Serialize, Deserialize, Ord, PartialOrd)]
 pub struct Username(String);
 
 impl From<String> for Username {
