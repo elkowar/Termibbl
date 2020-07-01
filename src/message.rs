@@ -13,6 +13,7 @@ pub enum ToClientMsg {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ToServerMsg {
     NewMessage(data::Message),
+    CommandMsg(data::CommandMsg),
     NewLine(data::Line),
     ClearCanvas,
 }

@@ -5,10 +5,9 @@ use crate::{
     data,
     message::{InitialState, ToClientMsg, ToServerMsg},
 };
-use data::{Message, Username};
+use data::{CommandMsg, Message, Username};
 use futures_timer::Delay;
 use futures_util::{SinkExt, StreamExt};
-use rand::seq::SliceRandom;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::{collections::HashMap, path::PathBuf, time::Duration};
@@ -59,14 +58,25 @@ enum ServerEvent {
 struct UserSession {
     username: Username,
     msg_send: Mutex<tokio::sync::mpsc::Sender<ToClientMsg>>,
+    close_send: tokio::sync::mpsc::Sender<()>,
 }
 
 impl UserSession {
-    fn new(username: Username, msg_send: tokio::sync::mpsc::Sender<ToClientMsg>) -> Self {
+    fn new(
+        username: Username,
+        msg_send: tokio::sync::mpsc::Sender<ToClientMsg>,
+        close_send: tokio::sync::mpsc::Sender<()>,
+    ) -> Self {
         UserSession {
             username,
             msg_send: Mutex::new(msg_send),
+            close_send,
         }
+    }
+
+    async fn close(mut self) -> Result<()> {
+        self.close_send.send(()).await?;
+        Ok(())
     }
 
     async fn send(&self, msg: ToClientMsg) -> Result<()> {
@@ -78,13 +88,13 @@ impl UserSession {
 #[derive(Debug)]
 pub enum GameState {
     FreeDraw,
-    Skribbl(Vec<String>, Option<SkribblState>),
+    Skribbl(SkribblState),
 }
 
 impl GameState {
     fn skribbl_state(&self) -> Option<&SkribblState> {
         match self {
-            GameState::Skribbl(_, Some(state)) => Some(state),
+            GameState::Skribbl(state) => Some(state),
             _ => None,
         }
     }
@@ -96,66 +106,78 @@ struct ServerState {
     pub lines: Vec<data::Line>,
     pub dimensions: (usize, usize),
     pub game_state: GameState,
+    pub words: Option<Vec<String>>,
 }
 
 impl ServerState {
-    fn new(game_state: GameState, dimensions: (usize, usize)) -> Self {
+    fn new(game_state: GameState, dimensions: (usize, usize), words: Option<Vec<String>>) -> Self {
         ServerState {
             sessions: HashMap::new(),
             lines: Vec::new(),
             dimensions,
             game_state,
+            words,
         }
+    }
+
+    async fn remove_player(&mut self, username: &Username) -> Result<()> {
+        self.sessions.remove(username).map(|x| x.close());
+        match self.game_state {
+            GameState::Skribbl(ref mut state) => {
+                if state.drawing_user == *username {
+                    state.next_turn();
+                }
+                state.player_states.remove(username);
+                let state = state.clone();
+                self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                    .await?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn on_command_msg(&mut self, _username: &Username, msg: &CommandMsg) -> Result<()> {
+        dbg!(msg);
+        match msg {
+            CommandMsg::KickPlayer(kicked_player) => self.remove_player(kicked_player).await?,
+        }
+        Ok(())
     }
 
     async fn on_new_message(&mut self, username: Username, msg: data::Message) -> Result<()> {
         let mut did_solve = false;
         match self.game_state {
-            GameState::Skribbl(ref mut words, Some(ref mut state)) => {
+            GameState::Skribbl(ref mut state) => {
                 let can_guess = state.can_guess(&username);
                 let current_word = &state.current_word;
 
-                if msg.text().starts_with("!kick ") {
-                    state.player_states.remove(&Username::from(
-                        msg.text().trim_start_matches("!kick ").to_string(),
-                    ));
-
-                    let state = state.clone();
-                    self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                        .await?;
-                    return Ok(());
-                }
-
                 if let Some(player_state) = state.player_states.get_mut(&username) {
-                    if can_guess && &msg.text().to_lowercase() == &current_word.to_lowercase() {
+                    if can_guess && msg.text().eq_ignore_ascii_case(&current_word) {
                         player_state.on_solve();
                         did_solve = true;
                         if state.did_all_solve() {
-                            *words = words
-                                .into_iter()
-                                .filter(|x| x != &&state.current_word)
-                                .map(|x| x.clone())
-                                .collect();
-                            state.next_player(
-                                words.choose(&mut rand::thread_rng()).unwrap().clone(),
-                            );
+                            state.next_turn();
                         }
                         let state = state.clone();
-                        let solved_msg = Message::SystemMsg(format!("{} solved it!", username));
-                        self.broadcast(ToClientMsg::NewMessage(solved_msg)).await?;
+                        self.broadcast_system_msg(format!("{} guessed it!", username))
+                            .await?;
                         self.broadcast(ToClientMsg::SkribblStateChanged(state))
                             .await?;
                     }
                 }
             }
-            GameState::Skribbl(ref words, None) => {
-                let skribbl_state =
-                    SkribblState::with_users(self.sessions.keys().cloned().collect(), &words);
-                self.game_state = GameState::Skribbl(words.clone(), Some(skribbl_state.clone()));
-                self.broadcast(ToClientMsg::SkribblStateChanged(skribbl_state))
-                    .await?;
+            GameState::FreeDraw => {
+                if let Some(words) = &self.words {
+                    let skribbl_state = SkribblState::with_users(
+                        self.sessions.keys().cloned().collect::<Vec<Username>>(),
+                        words.clone(),
+                    );
+                    self.game_state = GameState::Skribbl(skribbl_state.clone());
+                    self.broadcast(ToClientMsg::SkribblStateChanged(skribbl_state))
+                        .await?;
+                }
             }
-            GameState::FreeDraw => {}
         }
 
         if !did_solve {
@@ -167,6 +189,9 @@ impl ServerState {
 
     async fn on_to_srv_msg(&mut self, username: Username, msg: ToServerMsg) -> Result<()> {
         match msg {
+            ToServerMsg::CommandMsg(msg) => {
+                self.on_command_msg(&username, &msg).await?;
+            }
             ToServerMsg::NewMessage(message) => {
                 self.on_new_message(username, message).await?;
             }
@@ -183,57 +208,49 @@ impl ServerState {
     }
 
     pub async fn on_tick(&mut self) -> Result<()> {
-        match self.game_state {
-            GameState::Skribbl(ref mut words, Some(ref mut state)) => {
-                let elapsed_time = get_time_now() - state.round_start_time;
-                if elapsed_time > ROUND_DURATION {
-                    *words = words
-                        .into_iter()
-                        .filter(|x| x != &&state.current_word)
-                        .map(|x| x.clone())
-                        .collect();
-                    state.next_player(words.choose(&mut rand::thread_rng()).unwrap().clone());
-                    let state = state.clone();
-                    self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                        .await?;
-                }
+        if let GameState::Skribbl(ref mut state) = self.game_state {
+            let elapsed_time = get_time_now() - state.round_start_time;
+            if elapsed_time > ROUND_DURATION {
+                state.next_turn();
+                let state = state.clone();
+                self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                    .await?;
             }
-            _ => {}
         }
         Ok(())
     }
 
     pub async fn on_user_joined(&mut self, session: UserSession) -> Result<()> {
-        match self.game_state {
-            GameState::Skribbl(_, Some(ref mut state)) => {
-                state.add_player(session.username.clone());
-                let state = state.clone();
-                self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                    .await?;
-
-                let joined_msg = data::Message::SystemMsg(format!("{} joined", session.username));
-                self.broadcast(ToClientMsg::NewMessage(joined_msg)).await?;
-            }
-            _ => {}
+        if let GameState::Skribbl(ref mut state) = self.game_state {
+            state.add_player(session.username.clone());
+            let state = state.clone();
+            self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                .await?;
+            self.broadcast_system_msg(format!("{} joined", session.username))
+                .await?;
         }
 
+        let initial_state = InitialState {
+            lines: self.lines.clone(),
+            skribbl_state: self.game_state.skribbl_state().cloned(),
+            dimensions: self.dimensions,
+        };
         session
-            .send(ToClientMsg::InitialState(InitialState {
-                lines: self.lines.clone(),
-                skribbl_state: self.game_state.skribbl_state().cloned(),
-                dimensions: self.dimensions,
-            }))
+            .send(ToClientMsg::InitialState(initial_state))
             .await?;
         self.sessions.insert(session.username.clone(), session);
         Ok(())
     }
 
-    pub async fn on_user_leave(&mut self, username: &Username) {
-        println!("user left: {}", username);
-        self.sessions.remove(username);
+    /// send a Message::SystemMsg to all active sessions
+    async fn broadcast_system_msg(&self, msg: String) -> Result<()> {
+        self.broadcast(ToClientMsg::NewMessage(Message::SystemMsg(msg)))
+            .await?;
+        Ok(())
     }
 
-    #[allow(unused)]
+    /// send a ToClientMsg to a specific session
+    #[allow(dead_code)]
     pub async fn send_to(&self, user: &Username, msg: ToClientMsg) -> Result<()> {
         self.sessions
             .get(user)
@@ -243,6 +260,7 @@ impl ServerState {
         Ok(())
     }
 
+    /// broadcast a ToClientMsg to all running sessions
     async fn broadcast(&self, msg: ToClientMsg) -> Result<()> {
         for (_, session) in self.sessions.iter() {
             session.send(msg.clone()).await?;
@@ -250,6 +268,7 @@ impl ServerState {
         Ok(())
     }
 
+    /// run the main server, reacting to any server events
     async fn run(&mut self, mut evt_recv: tokio::sync::mpsc::Receiver<ServerEvent>) -> Result<()> {
         loop {
             if let Some(evt) = evt_recv.recv().await {
@@ -258,7 +277,7 @@ impl ServerState {
                         self.on_to_srv_msg(name.into(), msg).await?
                     }
                     ServerEvent::UserJoined(session) => self.on_user_joined(session).await?,
-                    ServerEvent::UserLeft(username) => self.on_user_leave(&username).await,
+                    ServerEvent::UserLeft(username) => self.remove_player(&username).await?,
                     ServerEvent::Tick => self.on_tick().await?,
                 }
             }
@@ -276,22 +295,10 @@ pub async fn run_server(
         .await
         .expect("Could not start webserver (could not bind)");
 
-    let game_state = if let Some(word_file) = word_file {
-        let mut file = std::fs::File::open(word_file)?;
-        let mut words = String::new();
-        file.read_to_string(&mut words)?;
-        let words = words
-            .lines()
-            .map(|x| x.trim().to_string())
-            .filter(|x| !x.is_empty())
-            .collect::<Vec<String>>();
-        GameState::Skribbl(words, None)
-    } else {
-        GameState::FreeDraw
-    };
+    let maybe_words = word_file.map(|path| read_words_file(&path).unwrap());
 
     let (srv_event_send, srv_event_recv) = tokio::sync::mpsc::channel::<ServerEvent>(1);
-    let mut server_state = ServerState::new(game_state, dimensions);
+    let mut server_state = ServerState::new(GameState::FreeDraw, dimensions, maybe_words);
 
     tokio::spawn(async move {
         server_state.run(srv_event_recv).await.unwrap();
@@ -313,6 +320,7 @@ async fn handle_connection(
     println!("new WebSocket connection: {}", peer);
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
+    // first, wait for the client to send his username
     let username: Username = loop {
         let msg = ws_receiver
             .next()
@@ -324,33 +332,51 @@ async fn handle_connection(
     };
 
     let (session_msg_send, mut session_msg_recv) = tokio::sync::mpsc::channel(1);
+    let (session_close_send, mut session_close_recv) = tokio::sync::mpsc::channel(1);
 
+    // then, create a session and send that session to the server's main thread
+    let session = UserSession::new(username.clone(), session_msg_send, session_close_send);
     srv_event_send
-        .send(ServerEvent::UserJoined(UserSession::new(
-            username.clone(),
-            session_msg_send,
-        )))
+        .send(ServerEvent::UserJoined(session))
         .await?;
 
+    // TODO look at stream forwarding for this...
+    // asynchronously read messages that the main server thread wants
+    // to send to this client and forward them to the WS client
     let send_thread = tokio::spawn(async move {
         loop {
-            if let Some(Ok(msg)) = session_msg_recv
-                .recv()
-                .await
-                .map(|msg| serde_json::to_string(&msg))
-            {
-                let result = ws_sender.send(tungstenite::Message::Text(msg)).await;
-                if let Err(_) = result {
-                    return result;
+            tokio::select! {
+                maybe_msg = session_msg_recv.recv() => match maybe_msg {
+                    Some(msg) => {
+                        let msg = serde_json::to_string(&msg).expect("Could not serialize msg");
+                        let result = ws_sender.send(tungstenite::Message::Text(msg)).await;
+                        if let Err(_) = result {
+                            break result;
+                        }
+                    }
+                    // if the msg received is None, all senders have been closed, so we can finish
+                    None => {
+                        ws_sender.send(tungstenite::Message::Close(None)).await?;
+                        break Ok(());
+                    }
+                },
+                _ = session_close_recv.recv() => {
+                    ws_sender.send(tungstenite::Message::Close(None)).await?;
+                    break Ok(());
                 }
             }
         }
     });
 
+    // TODO look at stream forwarding for this
+    // forward other events to the main server thread
     loop {
         let delay = Delay::new(Duration::from_millis(100));
         tokio::select! {
+            // every 100ms, send a tick event to the main server thread
             _ = delay => srv_event_send.send(ServerEvent::Tick).await?,
+
+            // Websocket messages from the client
             msg = ws_receiver.next() => match msg {
                 Some(Ok(tungstenite::Message::Text(msg))) => match serde_json::from_str(&msg) {
                     Ok(Some(msg)) => {
@@ -359,7 +385,7 @@ async fn handle_connection(
                             .await?;
                     }
                     Ok(None) => {
-                        panic!("Got none. TODO: cannot be bothered to handle this correctly rn");
+                        break;
                     }
                     Err(err) => {
                         eprintln!("{} (msg was: {})", err, msg);
@@ -374,4 +400,15 @@ async fn handle_connection(
     drop(send_thread);
     srv_event_send.send(ServerEvent::UserLeft(username)).await?;
     Ok(())
+}
+
+pub fn read_words_file(path: &PathBuf) -> Result<Vec<String>> {
+    let mut file = std::fs::File::open(path)?;
+    let mut words = String::new();
+    file.read_to_string(&mut words)?;
+    Ok(words
+        .lines()
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<String>>())
 }

@@ -153,3 +153,8 @@ impl From<CanvasColor> for Color {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CommandMsg {
+    KickPlayer(Username),
+}

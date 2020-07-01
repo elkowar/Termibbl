@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 
-use data::Username;
+use data::{CommandMsg, Username};
 use tokio_tungstenite::WebSocketStream;
 use tui::{backend::Backend, Terminal};
 
@@ -138,9 +138,20 @@ impl App {
                 if self.chat.input.is_empty() {
                     return Ok(());
                 }
-                let message =
-                    Message::UserMsg(self.session.username.clone(), self.chat.input.clone());
-                self.session.send(ToServerMsg::NewMessage(message)).await?;
+
+                let msg_content = self.chat.input.clone();
+                if msg_content.starts_with("!") {
+                    if msg_content.starts_with("!kick ") {
+                        let msg_without_cmd =
+                            msg_content.trim_start_matches("!kick ").trim().to_string();
+                        let command = CommandMsg::KickPlayer(Username::from(msg_without_cmd));
+                        self.session.send(ToServerMsg::CommandMsg(command)).await?;
+                    };
+                } else {
+                    let message =
+                        Message::UserMsg(self.session.username.clone(), self.chat.input.clone());
+                    self.session.send(ToServerMsg::NewMessage(message)).await?;
+                }
                 self.chat.input = String::new();
             }
             KeyCode::Backspace => {
@@ -221,11 +232,13 @@ impl ServerSession {
             .0;
         let (mut ws_send, mut ws_recv) = ws.split();
 
+        // first send the username to the server
         ws_send
             .send(tungstenite::Message::Text(username.clone().into()))
             .await
             .unwrap();
 
+        // and wait for the initial state
         let initial_state: InitialState = loop {
             let msg = ws_recv.next().await;
             if let Some(Ok(tungstenite::Message::Text(msg))) = msg {
@@ -235,7 +248,8 @@ impl ServerSession {
             }
         };
 
-        tokio::spawn(async move {
+        // forward events to the server
+        let send_handle = tokio::spawn(async move {
             loop {
                 let msg = to_server_recv.recv().await;
                 let msg = serde_json::to_string(&msg).unwrap();
@@ -245,6 +259,7 @@ impl ServerSession {
             }
         });
 
+        // and receive messages from the server
         tokio::spawn(async move {
             loop {
                 match ws_recv.next().await {
@@ -258,7 +273,9 @@ impl ServerSession {
                     _ => {}
                 }
             }
+            std::mem::drop(send_handle);
         });
+
         Ok(App::new(
             ServerSession {
                 to_server_send,

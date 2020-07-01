@@ -1,5 +1,5 @@
 use crate::client::Username;
-use rand::seq::IteratorRandom;
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time;
@@ -19,6 +19,8 @@ pub struct SkribblState {
     pub player_states: HashMap<Username, PlayerState>,
 
     pub round_start_time: u64,
+
+    pub remaining_words: Vec<String>,
 }
 
 impl SkribblState {
@@ -53,7 +55,8 @@ impl SkribblState {
         }
     }
 
-    pub fn next_player(&mut self, word: String) -> &Username {
+    pub fn next_turn(&mut self) -> &Username {
+        self.current_word = self.remaining_words.remove(0);
         self.round_start_time = get_time_now();
         if self.remaining_users.len() == 0 {
             self.remaining_users = self.player_states.keys().cloned().collect();
@@ -62,18 +65,20 @@ impl SkribblState {
         self.player_states
             .iter_mut()
             .for_each(|(_, player)| player.has_solved = false);
-        self.current_word = word;
         &self.drawing_user
     }
 
-    pub fn with_users(users: Vec<Username>, words: &[String]) -> Self {
+    pub fn with_users(users: Vec<Username>, mut words: Vec<String>) -> Self {
         let mut rng = rand::thread_rng();
+        words.shuffle(&mut rng);
+        let current_word = words.remove(0);
         let mut state = SkribblState {
-            current_word: words.iter().choose(&mut rng).unwrap().clone(),
+            current_word,
             drawing_user: users[0].clone(),
             remaining_users: users.iter().cloned().skip(1).collect::<Vec<_>>(),
             player_states: HashMap::new(),
             round_start_time: get_time_now(),
+            remaining_words: words,
         };
         for user in users {
             state.player_states.insert(user, PlayerState::default());

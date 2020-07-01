@@ -5,6 +5,7 @@ pub enum Error {
     SendError(String),
     CrosstermError(crossterm::ErrorKind),
     IOError(std::io::Error),
+    WebSocketError(tungstenite::error::Error),
 }
 
 impl<T> From<tokio::sync::mpsc::error::SendError<T>> for Error {
@@ -21,5 +22,11 @@ impl From<crossterm::ErrorKind> for Error {
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::IOError(e)
+    }
+}
+
+impl From<tungstenite::error::Error> for Error {
+    fn from(e: tungstenite::error::Error) -> Self {
+        Error::WebSocketError(e)
     }
 }
