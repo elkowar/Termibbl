@@ -315,7 +315,6 @@ pub async fn run_server(
     dimensions: (usize, usize),
     word_file: Option<PathBuf>,
 ) -> Result<()> {
-    println!("Running server on {}", addr);
     let mut server_listener = TcpListener::bind(addr)
         .await
         .expect("Could not start webserver (could not bind)");

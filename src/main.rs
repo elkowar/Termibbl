@@ -23,7 +23,6 @@ pub use serde::{Deserialize, Serialize};
 #[derive(Debug, StructOpt)]
 #[structopt(name = "Termibbl", about = "A Skribbl.io-alike for the terminal")]
 struct Opt {
-    addr: String,
     #[structopt(subcommand)]
     cmd: SubOpt,
 }
@@ -31,12 +30,16 @@ struct Opt {
 #[derive(Debug, StructOpt)]
 enum SubOpt {
     Server {
+        #[structopt(long = "--port", short = "-p")]
+        port: u32,
         #[structopt(long = "--words", parse(from_os_str), required_if("freedraw", "true"))]
         word_file: Option<PathBuf>,
-        #[structopt(short, long, help = "<width>x<height>", parse(from_str = crate::parse_dimension))]
+        #[structopt(short, long, help = "<width>x<height>", parse(from_str = crate::parse_dimension), default_value = "100x50")]
         dimensions: (usize, usize),
     },
     Client {
+        #[structopt(long = "address", short = "-a")]
+        addr: String,
         username: String,
     },
 }
@@ -53,14 +56,31 @@ fn parse_dimension(s: &str) -> (usize, usize) {
 async fn main() -> Result<()> {
     let opt = Opt::from_args();
     match opt.cmd {
-        SubOpt::Client { username } => {
-            run_client(&opt.addr, username.into()).await.unwrap();
+        SubOpt::Client { username, addr } => {
+            let addr = if addr.starts_with("ws://") || addr.starts_with("wss://") {
+                addr
+            } else {
+                format!("ws://{}", addr)
+            };
+            run_client(&addr, username.into()).await.unwrap();
         }
         SubOpt::Server {
+            port,
             word_file,
             dimensions,
         } => {
-            server::server::run_server(&opt.addr, dimensions, word_file)
+            tokio::spawn(async move {
+                if let Ok(res) = reqwest::get("http://ifconfig.me").await {
+                    if let Ok(ip) = res.text().await {
+                        println!("Starting server!");
+                        println!("Your public IP is {}:{}", ip, port);
+                        println!("You can find out your private IP by running \"ifconfig\" in the terminal");
+                    }
+                }
+            });
+
+            let addr = format!("0.0.0.0:{}", port);
+            server::server::run_server(&addr, dimensions, word_file)
                 .await
                 .unwrap();
         }
