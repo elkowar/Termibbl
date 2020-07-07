@@ -56,6 +56,8 @@ impl SkribblState {
             .map(|(idx, c)| {
                 if self.revealed_characters.contains(&(idx as usize)) {
                     c
+                } else if c.is_whitespace() {
+                    ' '
                 } else {
                     '?'
                 }
