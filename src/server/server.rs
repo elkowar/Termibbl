@@ -98,6 +98,9 @@ impl GameState {
             _ => None,
         }
     }
+    fn is_drawing(&self, username: &Username) -> Option<bool> {
+        Some(self.skribbl_state()?.drawing_user == *username)
+    }
 }
 
 #[derive(Debug)]
@@ -120,20 +123,33 @@ impl ServerState {
         }
     }
 
+    async fn next_turn(&mut self) -> Result<()> {
+        let state = match &mut self.game_state {
+            GameState::Skribbl(state) => state,
+            _ => return Ok(()),
+        };
+        let remaining_time = state.remaining_time();
+        if let Some(ref mut drawing_user) = state.player_states.get_mut(&state.drawing_user) {
+            drawing_user.score += 50;
+            drawing_user.on_solve(remaining_time);
+        }
+        state.next_turn();
+        Ok(())
+    }
+
     async fn remove_player(&mut self, username: &Username) -> Result<()> {
         self.sessions.remove(username).map(|x| x.close());
-        match self.game_state {
-            GameState::Skribbl(ref mut state) => {
-                state.remove_user(username);
-                if state.drawing_user == *username {
-                    state.next_turn();
-                }
-                let state = state.clone();
-                self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                    .await?;
-            }
-            _ => {}
+        if self.game_state.is_drawing(username) == Some(true) {
+            self.next_turn().await?;
         }
+        let state = match &mut self.game_state {
+            GameState::Skribbl(state) => state,
+            _ => return Ok(()),
+        };
+        state.remove_user(username);
+        let state = state.clone();
+        self.broadcast(ToClientMsg::SkribblStateChanged(state))
+            .await?;
         Ok(())
     }
 
@@ -159,15 +175,9 @@ impl ServerState {
                         let all_solved = state.did_all_solve();
                         let old_word = state.current_word.clone();
                         if all_solved {
-                            if let Some(ref mut drawing_user) =
-                                state.player_states.get_mut(&state.drawing_user)
-                            {
-                                drawing_user.score += 50;
-                                drawing_user.on_solve(remaining_time);
-                            }
-                            state.next_turn();
+                            self.next_turn().await?;
                         }
-                        let state = state.clone();
+                        let state = self.game_state.skribbl_state().unwrap().clone();
                         self.broadcast(ToClientMsg::SkribblStateChanged(state))
                             .await?;
                         self.broadcast_system_msg(format!("{} guessed it!", username))
@@ -222,26 +232,29 @@ impl ServerState {
     }
 
     pub async fn on_tick(&mut self) -> Result<()> {
-        if let GameState::Skribbl(ref mut state) = self.game_state {
-            let remaining_time = state.remaining_time();
-            if remaining_time <= 0 {
-                let old_word = state.current_word.clone();
-                if let Some(ref mut drawing_user) = state.player_states.get_mut(&state.drawing_user)
-                {
-                    drawing_user.score += 50;
-                }
-                state.next_turn();
-                let state = state.clone();
-                self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                    .await?;
-                self.lines.clear();
-                self.broadcast(ToClientMsg::ClearCanvas).await?;
-                self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
-                    .await?;
+        let state = match &mut self.game_state {
+            GameState::Skribbl(state) => state,
+            _ => return Ok(()),
+        };
+
+        let remaining_time = state.remaining_time();
+        if remaining_time <= 0 {
+            let old_word = state.current_word.clone();
+            if let Some(ref mut drawing_user) = state.player_states.get_mut(&state.drawing_user) {
+                drawing_user.score += 50;
             }
-            self.broadcast(ToClientMsg::TimeChanged(remaining_time as u32))
+
+            self.next_turn().await?;
+            let state = self.game_state.skribbl_state().unwrap().clone();
+            self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                .await?;
+            self.lines.clear();
+            self.broadcast(ToClientMsg::ClearCanvas).await?;
+            self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
                 .await?;
         }
+        self.broadcast(ToClientMsg::TimeChanged(remaining_time as u32))
+            .await?;
         Ok(())
     }
 
