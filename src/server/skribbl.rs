@@ -119,7 +119,8 @@ impl SkribblState {
                 drawing_user.on_solve(remaining_time);
             });
 
-        self.current_word = self.remaining_words.remove(0);
+        let new_word = self.remaining_words.remove(0);
+        self.set_current_word(new_word);
         self.round_end_time = get_time_now() + ROUND_DURATION;
         if self.remaining_users.len() == 0 {
             self.remaining_users = self.player_states.keys().cloned().collect();

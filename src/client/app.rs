@@ -6,7 +6,7 @@ use crate::{
     server::skribbl::{PlayerState, SkribblState},
     ClientEvent,
 };
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 
@@ -137,11 +137,9 @@ impl App {
         Ok(())
     }
 
-    pub async fn handle_chat_key_event(&mut self, code: &KeyCode) -> Result<()> {
+    pub async fn handle_chat_key_event(&mut self, event: &KeyEvent) -> Result<()> {
+        let KeyEvent { modifiers, code } = event;
         match code {
-            KeyCode::Char(c) => {
-                self.chat.input.push(*c);
-            }
             KeyCode::Enter => {
                 if self.chat.input.trim().is_empty() {
                     self.chat.input = String::new();
@@ -166,11 +164,17 @@ impl App {
             KeyCode::Backspace => {
                 self.chat.input.pop();
             }
+            KeyCode::Char('h') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.chat.input.pop();
+            }
             KeyCode::Delete => {
                 if self.is_drawing() {
                     self.session.send(ToServerMsg::ClearCanvas).await?;
                     self.canvas.lines.clear();
                 }
+            }
+            KeyCode::Char(c) => {
+                self.chat.input.push(*c);
             }
             _ => {}
         }
@@ -179,8 +183,8 @@ impl App {
 
     pub async fn handle_event(&mut self, evt: ClientEvent) -> Result<()> {
         match evt {
-            ClientEvent::KeyInput(KeyEvent { code, .. }) => {
-                self.handle_chat_key_event(&code).await?;
+            ClientEvent::KeyInput(evt) => {
+                self.handle_chat_key_event(&evt).await?;
             }
             ClientEvent::MouseInput(mouse_evt) => {
                 self.handle_mouse_event(mouse_evt).await?;
