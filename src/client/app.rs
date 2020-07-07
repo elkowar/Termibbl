@@ -3,7 +3,7 @@ use crate::{
     client::ui,
     data::{self, CanvasColor, Coord, Line, Message},
     message::{InitialState, ToClientMsg, ToServerMsg},
-    server::skribbl::SkribblState,
+    server::skribbl::{PlayerState, SkribblState},
     ClientEvent,
 };
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
@@ -84,6 +84,12 @@ impl App {
             session,
             remaining_time: None,
         }
+    }
+
+    pub fn own_player(&self) -> Option<&PlayerState> {
+        self.game_state
+            .as_ref()
+            .and_then(|state| state.player_states.get(&self.session.username))
     }
 
     pub fn is_drawing(&self) -> bool {

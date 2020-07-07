@@ -1,7 +1,7 @@
 use crate::{
-    client::app::{App, AppCanvas, Chat},
+    client::app::{App, AppCanvas},
     client::error::Result,
-    data::Coord,
+    data::{Coord, Message},
     server::skribbl::{PlayerState, SkribblState},
 };
 
@@ -70,7 +70,27 @@ pub fn draw<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()>
         };
         f.render_widget(canvas_widget, canvas_rect);
 
-        let chat_widget = ChatWidget::new(&app.chat, Block::default().borders(Borders::NONE));
+        let displayed_messages = (&app.chat.messages)
+            .iter()
+            .filter(|msg| match msg {
+                Message::SystemMsg(_) => true,
+                Message::UserMsg(username, _) => app.game_state.as_ref().map_or(true, |state| {
+                    app.is_drawing()
+                        || app.own_player().map_or(false, |x| x.has_solved)
+                        || (&state.drawing_user != username
+                            && !state
+                                .player_states
+                                .get(&username)
+                                .map_or(false, |player_state| player_state.has_solved))
+                }),
+            })
+            .collect::<Vec<_>>();
+
+        let chat_widget = ChatWidget::new(
+            displayed_messages.as_slice(),
+            &app.chat.input,
+            Block::default().borders(Borders::NONE),
+        );
         f.render_widget(chat_widget, sidebar_chunks[1]);
     })?;
     Ok(())
@@ -114,12 +134,17 @@ impl<'a, 't, 'b> Widget for CanvasWidget<'a, 't> {
 
 pub struct ChatWidget<'a, 't> {
     block: Block<'a>,
-    chat: &'t Chat,
+    messages: &'t [&'t Message],
+    input: &'t str,
 }
 
 impl<'a, 't> ChatWidget<'a, 't> {
-    pub fn new(chat: &'t Chat, block: Block<'a>) -> ChatWidget<'a, 't> {
-        ChatWidget { block, chat }
+    pub fn new(messages: &'t [&Message], input: &'t str, block: Block<'a>) -> ChatWidget<'a, 't> {
+        ChatWidget {
+            block,
+            messages,
+            input,
+        }
     }
 }
 impl<'a, 't, 'b> Widget for ChatWidget<'a, 't> {
@@ -134,11 +159,11 @@ impl<'a, 't, 'b> Widget for ChatWidget<'a, 't> {
             .constraints([Length(3), Percentage(100)].as_ref())
             .split(area);
 
-        Paragraph::new([Text::Raw(self.chat.input.clone().into())].iter())
+        Paragraph::new([Text::Raw(self.input.clone().into())].iter())
             .block(Block::default().borders(Borders::ALL).title("Your message"))
             .render(chunks[0], buf);
 
-        List::new(self.chat.messages.iter().rev().map(|msg| {
+        List::new(self.messages.iter().rev().map(|msg| {
             Text::styled(
                 format!("{}", msg),
                 if msg.is_system() {

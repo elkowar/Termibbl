@@ -152,31 +152,28 @@ impl ServerState {
                 let current_word = &state.current_word;
 
                 if let Some(player_state) = state.player_states.get_mut(&username) {
-                    if can_guess {
-                        if msg.text().eq_ignore_ascii_case(&current_word) {
-                            should_broadcast = false;
-                            player_state.on_solve(remaining_time);
-                            let all_solved = state.did_all_solve();
-                            let old_word = state.current_word.clone();
-                            if all_solved {
-                                state.next_turn();
-                            }
-                            let state = state.clone();
-                            self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                    if can_guess && msg.text().eq_ignore_ascii_case(&current_word) {
+                        should_broadcast = false;
+                        player_state.on_solve(remaining_time);
+                        let all_solved = state.did_all_solve();
+                        let old_word = state.current_word.clone();
+                        if all_solved {
+                            state.next_turn();
+                        }
+                        let state = state.clone();
+                        self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                            .await?;
+                        self.broadcast_system_msg(format!("{} guessed it!", username))
+                            .await?;
+                        if all_solved {
+                            self.lines.clear();
+                            self.broadcast(ToClientMsg::ClearCanvas).await?;
+                            self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
                                 .await?;
-                            self.broadcast_system_msg(format!("{} guessed it!", username))
-                                .await?;
-                            if all_solved {
-                                self.lines.clear();
-                                self.broadcast(ToClientMsg::ClearCanvas).await?;
-                                self.broadcast_system_msg(format!(
-                                    "The word was: \"{}\"",
-                                    old_word
-                                ))
-                                .await?;
-                            }
-                        } else if is_very_close_to(msg.text().to_string(), current_word.clone()) {
-                            should_broadcast = false;
+                        }
+                    } else if is_very_close_to(msg.text().to_string(), current_word.clone()) {
+                        should_broadcast = false;
+                        if can_guess {
                             let very_close_msg =
                                 Message::SystemMsg("You're very close!".to_string());
                             self.send_to(&username, ToClientMsg::NewMessage(very_close_msg))
