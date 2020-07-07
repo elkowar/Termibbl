@@ -149,14 +149,13 @@ impl ServerState {
             GameState::Skribbl(ref mut state) => {
                 let can_guess = state.can_guess(&username);
                 let remaining_time = state.remaining_time();
-                let current_word = &state.current_word;
+                let current_word = state.current_word().to_string();
 
                 if let Some(player_state) = state.player_states.get_mut(&username) {
                     if can_guess && msg.text().eq_ignore_ascii_case(&current_word) {
                         should_broadcast = false;
                         player_state.on_solve(remaining_time);
                         let all_solved = state.did_all_solve();
-                        let old_word = state.current_word.clone();
                         if all_solved {
                             state.next_turn();
                         }
@@ -168,10 +167,13 @@ impl ServerState {
                         if all_solved {
                             self.lines.clear();
                             self.broadcast(ToClientMsg::ClearCanvas).await?;
-                            self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
-                                .await?;
+                            self.broadcast_system_msg(format!(
+                                "The word was: \"{}\"",
+                                current_word
+                            ))
+                            .await?;
                         }
-                    } else if is_very_close_to(msg.text().to_string(), current_word.clone()) {
+                    } else if is_very_close_to(msg.text().to_string(), current_word.to_string()) {
                         should_broadcast = false;
                         if can_guess {
                             let very_close_msg =
@@ -229,8 +231,10 @@ impl ServerState {
         };
 
         let remaining_time = state.remaining_time();
+        let revealed_char_cnt = state.revealed_characters().len();
+
         if remaining_time <= 0 {
-            let old_word = state.current_word.clone();
+            let old_word = state.current_word().to_string();
             if let Some(ref mut drawing_user) = state.player_states.get_mut(&state.drawing_user) {
                 drawing_user.score += 50;
             }
@@ -243,9 +247,18 @@ impl ServerState {
             self.broadcast(ToClientMsg::ClearCanvas).await?;
             self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
                 .await?;
+        } else if remaining_time <= (ROUND_DURATION / 4) as u32 && revealed_char_cnt < 2
+            || remaining_time <= (ROUND_DURATION / 2) as u32 && revealed_char_cnt < 1
+        {
+            state.reveal_random_char();
+            let state = state.clone();
+            self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                .await?;
         }
+
         self.broadcast(ToClientMsg::TimeChanged(remaining_time as u32))
             .await?;
+
         Ok(())
     }
 

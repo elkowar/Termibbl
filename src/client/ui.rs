@@ -214,11 +214,9 @@ impl<'a, 't, 'b> Widget for SkribblStateWidget<'a, 't> {
         let is_drawing = self.state.drawing_user == *self.username;
 
         let current_word_representation = if is_drawing {
-            self.state.current_word.to_string()
+            self.state.current_word().to_string()
         } else {
-            self.state
-                .current_word
-                .replace(|c: char| !c.is_whitespace(), &"?")
+            self.state.hinted_current_word().to_string()
         };
 
         Paragraph::new(

@@ -1,6 +1,6 @@
 use super::server::ROUND_DURATION;
 use crate::client::Username;
-use rand::seq::SliceRandom;
+use rand::{prelude::IteratorRandom, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time;
@@ -8,7 +8,8 @@ use time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SkribblState {
-    pub current_word: String,
+    current_word: String,
+    revealed_characters: Vec<usize>,
 
     /// the currently drawing user
     pub drawing_user: Username,
@@ -25,6 +26,43 @@ pub struct SkribblState {
 }
 
 impl SkribblState {
+    pub fn current_word(&self) -> &str {
+        &self.current_word
+    }
+
+    pub fn revealed_characters(&self) -> &[usize] {
+        self.revealed_characters.as_ref()
+    }
+
+    pub fn set_current_word(&mut self, word: String) {
+        self.current_word = word;
+        self.revealed_characters = Vec::new();
+    }
+
+    /// reveals a random character, as long as that doesn't reveal half of the word
+    pub fn reveal_random_char(&mut self) {
+        if self.revealed_characters.len() < self.current_word.len() / 2 {
+            let mut rng = rand::thread_rng();
+            self.revealed_characters
+                .push((0..self.current_word.len()).choose(&mut rng).unwrap());
+        }
+    }
+
+    /// returns the placeholder chars for the current word, with the revealed characters revealed.
+    pub fn hinted_current_word(&self) -> String {
+        self.current_word
+            .chars()
+            .enumerate()
+            .map(|(idx, c)| {
+                if self.revealed_characters.contains(&(idx as usize)) {
+                    c
+                } else {
+                    '?'
+                }
+            })
+            .collect()
+    }
+
     pub fn remaining_time(&self) -> u32 {
         let elapsed_time = get_time_now() - self.round_start_time;
         (ROUND_DURATION - elapsed_time) as u32
@@ -99,7 +137,8 @@ impl SkribblState {
         words.shuffle(&mut rng);
         let current_word = words.remove(0);
         let mut state = SkribblState {
-            current_word,
+            current_word: current_word.clone(),
+            revealed_characters: Vec::new(),
             drawing_user: users[0].clone(),
             remaining_users: users.iter().cloned().skip(1).collect::<Vec<_>>(),
             player_states: HashMap::new(),
