@@ -150,10 +150,17 @@ impl ServerState {
                 let can_guess = state.can_guess(&username);
                 let remaining_time = state.remaining_time();
                 let current_word = state.current_word().to_string();
+                let noone_already_solved = state
+                    .player_states
+                    .iter()
+                    .all(|(_, player)| !player.has_solved);
 
                 if let Some(player_state) = state.player_states.get_mut(&username) {
                     if can_guess && msg.text().eq_ignore_ascii_case(&current_word) {
                         should_broadcast = false;
+                        if noone_already_solved {
+                            state.round_end_time -= remaining_time as u64 / 2;
+                        }
                         player_state.on_solve(remaining_time);
                         let all_solved = state.did_all_solve();
                         if all_solved {

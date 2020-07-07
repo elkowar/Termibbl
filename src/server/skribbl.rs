@@ -3,7 +3,7 @@ use crate::client::Username;
 use rand::{prelude::IteratorRandom, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time;
+use std::{cmp::max, time};
 use time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -20,7 +20,7 @@ pub struct SkribblState {
     /// states of all the players
     pub player_states: HashMap<Username, PlayerState>,
 
-    pub round_start_time: u64,
+    pub round_end_time: u64,
 
     pub remaining_words: Vec<String>,
 }
@@ -64,8 +64,7 @@ impl SkribblState {
     }
 
     pub fn remaining_time(&self) -> u32 {
-        let elapsed_time = get_time_now() - self.round_start_time;
-        (ROUND_DURATION - elapsed_time) as u32
+        max(0, self.round_end_time as i64 - get_time_now() as i64) as u32
     }
 
     pub fn did_all_solve(&self) -> bool {
@@ -121,7 +120,7 @@ impl SkribblState {
             });
 
         self.current_word = self.remaining_words.remove(0);
-        self.round_start_time = get_time_now();
+        self.round_end_time = get_time_now() + ROUND_DURATION;
         if self.remaining_users.len() == 0 {
             self.remaining_users = self.player_states.keys().cloned().collect();
         }
@@ -142,7 +141,7 @@ impl SkribblState {
             drawing_user: users[0].clone(),
             remaining_users: users.iter().cloned().skip(1).collect::<Vec<_>>(),
             player_states: HashMap::new(),
-            round_start_time: get_time_now(),
+            round_end_time: get_time_now() + ROUND_DURATION,
             remaining_words: words,
         };
         for user in users {
