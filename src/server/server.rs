@@ -10,7 +10,7 @@ use futures_timer::Delay;
 use futures_util::{SinkExt, StreamExt};
 use std::io::Read;
 use std::net::SocketAddr;
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{cmp::min, collections::HashMap, path::PathBuf, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -98,9 +98,6 @@ impl GameState {
             _ => None,
         }
     }
-    fn is_drawing(&self, username: &Username) -> Option<bool> {
-        Some(self.skribbl_state()?.drawing_user == *username)
-    }
 }
 
 #[derive(Debug)]
@@ -123,29 +120,15 @@ impl ServerState {
         }
     }
 
-    async fn next_turn(&mut self) -> Result<()> {
-        let state = match &mut self.game_state {
-            GameState::Skribbl(state) => state,
-            _ => return Ok(()),
-        };
-        let remaining_time = state.remaining_time();
-        if let Some(ref mut drawing_user) = state.player_states.get_mut(&state.drawing_user) {
-            drawing_user.score += 50;
-            drawing_user.on_solve(remaining_time);
-        }
-        state.next_turn();
-        Ok(())
-    }
-
     async fn remove_player(&mut self, username: &Username) -> Result<()> {
         self.sessions.remove(username).map(|x| x.close());
-        if self.game_state.is_drawing(username) == Some(true) {
-            self.next_turn().await?;
-        }
         let state = match &mut self.game_state {
             GameState::Skribbl(state) => state,
             _ => return Ok(()),
         };
+        if state.is_drawing(username) {
+            state.next_turn();
+        }
         state.remove_user(username);
         let state = state.clone();
         self.broadcast(ToClientMsg::SkribblStateChanged(state))
@@ -161,7 +144,7 @@ impl ServerState {
     }
 
     async fn on_new_message(&mut self, username: Username, msg: data::Message) -> Result<()> {
-        let mut did_solve = false;
+        let mut should_broadcast = true;
         match self.game_state {
             GameState::Skribbl(ref mut state) => {
                 let can_guess = state.can_guess(&username);
@@ -169,23 +152,34 @@ impl ServerState {
                 let current_word = &state.current_word;
 
                 if let Some(player_state) = state.player_states.get_mut(&username) {
-                    if can_guess && msg.text().eq_ignore_ascii_case(&current_word) {
-                        player_state.on_solve(remaining_time);
-                        did_solve = true;
-                        let all_solved = state.did_all_solve();
-                        let old_word = state.current_word.clone();
-                        if all_solved {
-                            self.next_turn().await?;
-                        }
-                        let state = self.game_state.skribbl_state().unwrap().clone();
-                        self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                            .await?;
-                        self.broadcast_system_msg(format!("{} guessed it!", username))
-                            .await?;
-                        if all_solved {
-                            self.lines.clear();
-                            self.broadcast(ToClientMsg::ClearCanvas).await?;
-                            self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
+                    if can_guess {
+                        if msg.text().eq_ignore_ascii_case(&current_word) {
+                            should_broadcast = false;
+                            player_state.on_solve(remaining_time);
+                            let all_solved = state.did_all_solve();
+                            let old_word = state.current_word.clone();
+                            if all_solved {
+                                state.next_turn();
+                            }
+                            let state = state.clone();
+                            self.broadcast(ToClientMsg::SkribblStateChanged(state))
+                                .await?;
+                            self.broadcast_system_msg(format!("{} guessed it!", username))
+                                .await?;
+                            if all_solved {
+                                self.lines.clear();
+                                self.broadcast(ToClientMsg::ClearCanvas).await?;
+                                self.broadcast_system_msg(format!(
+                                    "The word was: \"{}\"",
+                                    old_word
+                                ))
+                                .await?;
+                            }
+                        } else if is_very_close_to(msg.text().to_string(), current_word.clone()) {
+                            should_broadcast = false;
+                            let very_close_msg =
+                                Message::SystemMsg("You're very close!".to_string());
+                            self.send_to(&username, ToClientMsg::NewMessage(very_close_msg))
                                 .await?;
                         }
                     }
@@ -193,7 +187,7 @@ impl ServerState {
             }
             GameState::FreeDraw => {
                 if let Some(words) = &self.words {
-                    let skribbl_state = SkribblState::with_users(
+                    let skribbl_state = SkribblState::new(
                         self.sessions.keys().cloned().collect::<Vec<Username>>(),
                         words.clone(),
                     );
@@ -204,7 +198,7 @@ impl ServerState {
             }
         }
 
-        if !did_solve {
+        if should_broadcast {
             self.broadcast(ToClientMsg::NewMessage(msg)).await?;
         }
 
@@ -244,7 +238,7 @@ impl ServerState {
                 drawing_user.score += 50;
             }
 
-            self.next_turn().await?;
+            state.next_turn();
             let state = self.game_state.skribbl_state().unwrap().clone();
             self.broadcast(ToClientMsg::SkribblStateChanged(state))
                 .await?;
@@ -448,4 +442,38 @@ pub fn read_words_file(path: &PathBuf) -> Result<Vec<String>> {
         .map(|x| x.trim().to_string())
         .filter(|x| !x.is_empty())
         .collect::<Vec<String>>())
+}
+
+fn is_very_close_to(a: String, b: String) -> bool {
+    return levenshtein_distance(a, b) <= 1;
+}
+
+fn levenshtein_distance(a: String, b: String) -> usize {
+    let w1 = a.chars().collect::<Vec<_>>();
+    let w2 = b.chars().collect::<Vec<_>>();
+
+    let a_len = w1.len() + 1;
+    let b_len = w2.len() + 1;
+
+    let mut matrix = vec![vec![0]];
+
+    for i in 1..a_len {
+        matrix[0].push(i);
+    }
+    for j in 1..b_len {
+        matrix.push(vec![j]);
+    }
+
+    for (j, i) in (1..b_len).flat_map(|j| (1..a_len).map(move |i| (j, i))) {
+        let x: usize = if w1[i - 1].eq_ignore_ascii_case(&w2[j - 1]) {
+            matrix[j - 1][i - 1]
+        } else {
+            1 + min(
+                min(matrix[j][i - 1], matrix[j - 1][i]),
+                matrix[j - 1][i - 1],
+            )
+        };
+        matrix[j].push(x);
+    }
+    matrix[b_len - 1][a_len - 1]
 }

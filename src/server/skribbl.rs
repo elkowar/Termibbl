@@ -61,7 +61,27 @@ impl SkribblState {
         }
     }
 
+    pub fn is_drawing(&self, username: &Username) -> bool {
+        self.drawing_user == *username
+    }
+    pub fn can_guess(&self, username: &Username) -> bool {
+        !self.is_drawing(username)
+            && !self
+                .player_states
+                .get(username)
+                .map(|x| x.has_solved)
+                .unwrap_or(false)
+    }
+
     pub fn next_turn(&mut self) -> &Username {
+        let remaining_time = self.remaining_time();
+        self.player_states
+            .get_mut(&self.drawing_user)
+            .map(|drawing_user| {
+                drawing_user.score += 50;
+                drawing_user.on_solve(remaining_time);
+            });
+
         self.current_word = self.remaining_words.remove(0);
         self.round_start_time = get_time_now();
         if self.remaining_users.len() == 0 {
@@ -74,7 +94,7 @@ impl SkribblState {
         &self.drawing_user
     }
 
-    pub fn with_users(users: Vec<Username>, mut words: Vec<String>) -> Self {
+    pub fn new(users: Vec<Username>, mut words: Vec<String>) -> Self {
         let mut rng = rand::thread_rng();
         words.shuffle(&mut rng);
         let current_word = words.remove(0);
@@ -90,18 +110,6 @@ impl SkribblState {
             state.player_states.insert(user, PlayerState::default());
         }
         state
-    }
-
-    pub fn is_drawing(&self, username: &Username) -> bool {
-        self.drawing_user == *username
-    }
-    pub fn can_guess(&self, username: &Username) -> bool {
-        !self.is_drawing(username)
-            && !self
-                .player_states
-                .get(username)
-                .map(|x| x.has_solved)
-                .unwrap_or(false)
     }
 }
 
