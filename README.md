@@ -2,10 +2,6 @@
 
 A skribbl.io alike, but running in your terminal.
 
-### Example
-
-![Termibbl](/images/term.gif)
-
 ### Usage
 
 1. Click on a color to select it
