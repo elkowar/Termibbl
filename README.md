@@ -72,7 +72,8 @@ termibbl client --address <public termibbl adress>:<port> <usernane>
 
 ![exit](/images/exit.gif)
 
-###### Original creator
+#### Original creator
 
 [ElKowar](https://github.com/elkowar/)
+
 I simply made the README.md
