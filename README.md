@@ -33,18 +33,18 @@ to run:
 ```
 ### Creating a server and connecting to it
 
-##### Creating a server
+#### Creating a server
 ```
 termibbl server --port <port>
 ```
-###### What port should i use?
+##### What port should i use?
 If you're uncertain use:
 ```
 --port 8888
 ```
 Which should be fine and not conflict with anything.
 
-##### Connecting to a server
+#### Connecting to a server
 
 ```
 termibbl client --address <public termibbl adress>:<port> <usernane>
