@@ -2,6 +2,8 @@
 
 A skribbl.io alike, but running in your terminal.
 
+Created in Rust
+
 ### Installation
 
 ### Source
