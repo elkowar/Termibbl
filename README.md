@@ -30,9 +30,9 @@ A skribbl.io alike, but running in your terminal.
 
 ### Installation
 
-#### Source
+### Source
 
-##### Nix
+#### Nix
 ```
 git clone https://github.com/elkowar/Termibbl
 cd Termibbl
@@ -46,7 +46,7 @@ to run:
 ```
 termibbl
 ```
-##### Cargo
+#### Cargo
 
 ```
 git clone https://github.com/elkowar/Termibbl
