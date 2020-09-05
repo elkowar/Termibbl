@@ -2,28 +2,6 @@
 
 A skribbl.io alike, but running in your terminal.
 
-### Usage
-
-1. Click on a color to select it
-
-![color](/images/color.gif)
-
-2. Press and hold Left Mouse Button to draw
-
-![draw](/images/draw.gif)
-
-3. Click on the chat to type a message
-
-![chat](/images/chat.gif)
-
-4. Press "delete" to clear your screen
-
-![delete](/images/delete.gif)
-
-5. Press "esc" to quit
-
-![exit](/images/exit.gif)
-
 ### Installation
 
 ### Source
@@ -53,4 +31,45 @@ to run:
 ```
 ./target/release/termibbl
 ```
+### Creating a server and connecting to it
+
+##### Creating a server
+```
+termibbl server --port <port>
+```
+###### What port should i use?
+If you're uncertain use:
+```
+--port 8888
+```
+Which should be fine and not conflict with anything.
+
+##### Connecting to a server
+
+```
+termibbl client --address <public termibbl adress>:<port> <usernane>
+```
+
+### Usage
+
+1. Click on a color to select it
+
+![color](/images/color.gif)
+
+2. Press and hold Left Mouse Button to draw
+
+![draw](/images/draw.gif)
+
+3. Click on the chat to type a message
+
+![chat](/images/chat.gif)
+
+4. Press "delete" to clear your screen
+
+![delete](/images/delete.gif)
+
+5. Press "esc" to quit
+
+![exit](/images/exit.gif)
+
 
