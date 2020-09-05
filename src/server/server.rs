@@ -167,26 +167,30 @@ impl ServerState {
                             state.next_turn();
                         }
                         let state = state.clone();
-                        self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                            .await?;
-                        self.broadcast_system_msg(format!("{} guessed it!", username))
-                            .await?;
+                        tokio::try_join!(
+                            self.broadcast(ToClientMsg::SkribblStateChanged(state)),
+                            self.broadcast_system_msg(format!("{} guessed it!", username)),
+                        )?;
                         if all_solved {
                             self.lines.clear();
-                            self.broadcast(ToClientMsg::ClearCanvas).await?;
-                            self.broadcast_system_msg(format!(
-                                "The word was: \"{}\"",
-                                current_word
-                            ))
-                            .await?;
+                            tokio::try_join!(
+                                self.broadcast(ToClientMsg::ClearCanvas),
+                                self.broadcast_system_msg(format!(
+                                    "The word was: \"{}\"",
+                                    current_word
+                                ))
+                            )?;
                         }
                     } else if is_very_close_to(msg.text().to_string(), current_word.to_string()) {
                         should_broadcast = false;
                         if can_guess {
-                            let very_close_msg =
-                                Message::SystemMsg("You're very close!".to_string());
-                            self.send_to(&username, ToClientMsg::NewMessage(very_close_msg))
-                                .await?;
+                            self.send_to(
+                                &username,
+                                ToClientMsg::NewMessage(Message::SystemMsg(
+                                    "You're very close!".to_string(),
+                                )),
+                            )
+                            .await?;
                         }
                     }
                 }
@@ -248,12 +252,12 @@ impl ServerState {
 
             state.next_turn();
             let state = self.game_state.skribbl_state().unwrap().clone();
-            self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                .await?;
             self.lines.clear();
-            self.broadcast(ToClientMsg::ClearCanvas).await?;
-            self.broadcast_system_msg(format!("The word was: \"{}\"", old_word))
-                .await?;
+            tokio::try_join!(
+                self.broadcast(ToClientMsg::SkribblStateChanged(state)),
+                self.broadcast(ToClientMsg::ClearCanvas),
+                self.broadcast_system_msg(format!("The word was: \"{}\"", old_word)),
+            )?;
         } else if remaining_time <= (ROUND_DURATION / 4) as u32 && revealed_char_cnt < 2
             || remaining_time <= (ROUND_DURATION / 2) as u32 && revealed_char_cnt < 1
         {
@@ -273,10 +277,10 @@ impl ServerState {
         if let GameState::Skribbl(ref mut state) = self.game_state {
             state.add_player(session.username.clone());
             let state = state.clone();
-            self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                .await?;
-            self.broadcast_system_msg(format!("{} joined", session.username))
-                .await?;
+            tokio::try_join!(
+                self.broadcast(ToClientMsg::SkribblStateChanged(state)),
+                self.broadcast_system_msg(format!("{} joined", session.username)),
+            )?;
         }
 
         let initial_state = InitialState {
@@ -299,7 +303,6 @@ impl ServerState {
     }
 
     /// send a ToClientMsg to a specific session
-    #[allow(dead_code)]
     pub async fn send_to(&self, user: &Username, msg: ToClientMsg) -> Result<()> {
         self.sessions
             .get(user)
@@ -311,9 +314,12 @@ impl ServerState {
 
     /// broadcast a ToClientMsg to all running sessions
     async fn broadcast(&self, msg: ToClientMsg) -> Result<()> {
-        for (_, session) in self.sessions.iter() {
-            session.send(msg.clone()).await?;
-        }
+        futures_util::future::try_join_all(
+            self.sessions
+                .iter()
+                .map(|(_, session)| session.send(msg.clone())),
+        )
+        .await?;
         Ok(())
     }
 
