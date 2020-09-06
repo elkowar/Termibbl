@@ -9,11 +9,10 @@ Created in Rust
 #### Source
 
 #### Nix
-```
+```sh
 git clone https://github.com/elkowar/Termibbl
 cd Termibbl
 nix build
-```
 then
 ```
 nix-env -i -f default.nix
