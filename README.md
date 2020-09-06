@@ -6,7 +6,7 @@ Created in Rust
 
 ### Installation
 
-### Source
+#### Source
 
 #### Nix
 ```
