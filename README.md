@@ -13,6 +13,7 @@ Created in Rust
 git clone https://github.com/elkowar/Termibbl
 cd Termibbl
 nix build
+```
 then
 ```
 nix-env -i -f default.nix
@@ -23,7 +24,7 @@ termibbl
 ```
 #### Cargo
 
-```
+```sh
 git clone https://github.com/elkowar/Termibbl
 cd Termibbl
 cargo build --release
