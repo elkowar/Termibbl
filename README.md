@@ -73,9 +73,3 @@ termibbl client --address <public termibbl adress>:<port> <usernane>
 5. Press "esc" to quit
 
 ![exit](/images/exit.gif)
-
-#### Original creator
-
-[ElKowar](https://github.com/elkowar/)
-
-I simply made the README.md
