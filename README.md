@@ -15,11 +15,11 @@ cd Termibbl
 nix build
 ```
 then
-```
+```sh
 nix-env -i -f default.nix
 ```
 to run:
-```
+```sh
 termibbl
 ```
 #### Cargo
@@ -30,25 +30,25 @@ cd Termibbl
 cargo build --release
 ```
 to run:
-```
+```sh
 ./target/release/termibbl
 ```
 ### Creating a server and connecting to it
 
 #### Creating a server
-```
+```sh
 termibbl server --port <port>
 ```
 ##### What port should i use?
 If you're uncertain use:
-```
+```sh
 --port 8888
 ```
 Which should be fine and not conflict with anything.
 
 #### Connecting to a server
 
-```
+```sh
 termibbl client --address <public termibbl adress>:<port> <usernane>
 ```
 
