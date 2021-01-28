@@ -54,6 +54,8 @@ fn parse_dimension(s: &str) -> (usize, usize) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    pretty_env_logger::init();
+
     let opt = Opt::from_args();
     match opt.cmd {
         SubOpt::Client { username, addr } => {
