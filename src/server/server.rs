@@ -1,6 +1,6 @@
 //https://github.com/snapview/tokio-tungstenite/blob/master/examples/server.rs
 
-use super::skribbl::SkribblState;
+use super::{skribbl::SkribblState, CliOpts};
 use crate::{
     data,
     message::{InitialState, ToClientMsg, ToServerMsg},
@@ -8,9 +8,8 @@ use crate::{
 use data::{CommandMsg, Message, Username};
 use futures_timer::Delay;
 use futures_util::{SinkExt, StreamExt};
-use std::io::Read;
 use std::net::SocketAddr;
-use std::{cmp::min, collections::HashMap, path::PathBuf, time::Duration};
+use std::{cmp::min, collections::HashMap, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -35,15 +34,11 @@ impl<T> From<tokio::sync::mpsc::error::SendError<T>> for ServerError {
 }
 
 impl From<tungstenite::error::Error> for ServerError {
-    fn from(err: tungstenite::error::Error) -> Self {
-        ServerError::WsError(err)
-    }
+    fn from(err: tungstenite::error::Error) -> Self { ServerError::WsError(err) }
 }
 
 impl From<std::io::Error> for ServerError {
-    fn from(err: std::io::Error) -> Self {
-        ServerError::IOError(err)
-    }
+    fn from(err: std::io::Error) -> Self { ServerError::IOError(err) }
 }
 
 #[derive(Debug)]
@@ -340,16 +335,14 @@ impl ServerState {
     }
 }
 
-pub async fn run_server(
-    addr: &str,
-    dimensions: (usize, usize),
-    word_file: Option<PathBuf>,
-) -> Result<()> {
+pub async fn run_server(opt: CliOpts) -> Result<()> {
+    let addr = format!("0.0.0.0:{}", opt.port);
+    let dimensions = opt.dimensions;
+    let maybe_words = opt.words;
+
     let mut server_listener = TcpListener::bind(addr)
         .await
         .expect("Could not start webserver (could not bind)");
-
-    let maybe_words = word_file.map(|path| read_words_file(&path).unwrap());
 
     let (srv_event_send, srv_event_recv) = tokio::sync::mpsc::channel::<ServerEvent>(1);
     let mut server_state = ServerState::new(GameState::FreeDraw, dimensions, maybe_words);
@@ -456,20 +449,7 @@ async fn handle_connection(
     Ok(())
 }
 
-pub fn read_words_file(path: &PathBuf) -> Result<Vec<String>> {
-    let mut file = std::fs::File::open(path)?;
-    let mut words = String::new();
-    file.read_to_string(&mut words)?;
-    Ok(words
-        .lines()
-        .map(|x| x.trim().to_string())
-        .filter(|x| !x.is_empty())
-        .collect::<Vec<String>>())
-}
-
-fn is_very_close_to(a: String, b: String) -> bool {
-    return levenshtein_distance(a, b) <= 1;
-}
+fn is_very_close_to(a: String, b: String) -> bool { return levenshtein_distance(a, b) <= 1; }
 
 fn levenshtein_distance(a: String, b: String) -> usize {
     let w1 = a.chars().collect::<Vec<_>>();

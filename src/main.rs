@@ -3,9 +3,10 @@ pub mod data;
 pub mod message;
 pub mod server;
 
+use argh::FromArgs;
+use log::info;
+
 use std::io::{stdout, Write};
-use std::path::PathBuf;
-use structopt::StructOpt;
 
 use crossterm::{
     event::{read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseEvent},
@@ -20,71 +21,59 @@ use client::app::ServerSession;
 use data::Username;
 pub use serde::{Deserialize, Serialize};
 
-#[derive(Debug, StructOpt)]
-#[structopt(name = "Termibbl", about = "A Skribbl.io-alike for the terminal")]
+#[derive(FromArgs)]
+/// A Skribbl.io-alike for the terminal
 struct Opt {
-    #[structopt(subcommand)]
+    #[argh(subcommand)]
     cmd: SubOpt,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(FromArgs)]
+#[argh(subcommand)]
 enum SubOpt {
-    Server {
-        #[structopt(long = "--port", short = "-p")]
-        port: u32,
-        #[structopt(long = "--words", parse(from_os_str), required_if("freedraw", "true"))]
-        word_file: Option<PathBuf>,
-        #[structopt(short, long, help = "<width>x<height>", parse(from_str = crate::parse_dimension), default_value = "100x50")]
-        dimensions: (usize, usize),
-    },
-    Client {
-        #[structopt(long = "address", short = "-a")]
-        addr: String,
-        username: String,
-    },
+    Server(server::CliOpts),
+    Client(client::CliOpts),
 }
 
-fn parse_dimension(s: &str) -> (usize, usize) {
-    let mut split = s.split('x');
-    (
-        split.next().unwrap().parse().unwrap(),
-        split.next().unwrap().parse().unwrap(),
-    )
+fn display_public_ip(port: u32) {
+    tokio::spawn(async move {
+        if let Ok(res) = reqwest::get("http://ifconfig.me").await {
+            if let Ok(ip) = res.text().await {
+                println!("Your public IP is {}:{}", ip, port);
+                info!("You can find out your private IP by running \"ip addr\" in the terminal");
+            }
+        }
+    });
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     pretty_env_logger::init();
 
-    let opt = Opt::from_args();
-    match opt.cmd {
-        SubOpt::Client { username, addr } => {
+    let cli: Opt = argh::from_env();
+    match cli.cmd {
+        SubOpt::Client(opt) => {
+            let addr = opt.addr;
             let addr = if addr.starts_with("ws://") || addr.starts_with("wss://") {
                 addr
             } else {
                 format!("ws://{}", addr)
             };
-            run_client(&addr, username.into()).await.unwrap();
+            run_client(&addr, opt.username.into()).await.unwrap();
         }
-        SubOpt::Server {
-            port,
-            word_file,
-            dimensions,
-        } => {
-            tokio::spawn(async move {
-                if let Ok(res) = reqwest::get("http://ifconfig.me").await {
-                    if let Ok(ip) = res.text().await {
-                        println!("Starting server!");
-                        println!("Your public IP is {}:{}", ip, port);
-                        println!("You can find out your private IP by running \"ifconfig\" in the terminal");
-                    }
-                }
-            });
 
-            let addr = format!("0.0.0.0:{}", port);
-            server::server::run_server(&addr, dimensions, word_file)
-                .await
-                .unwrap();
+        SubOpt::Server(opt) => {
+            let port = opt.port;
+
+            // display public ip
+            if opt.display_public_ip {
+                display_public_ip(port);
+            }
+
+            // let default_game_opts: GameOpts = opt.into();
+            // let server_listener = server::listen(port);
+
+            server::server::run_server(opt).await.unwrap();
         }
     }
     Ok(())
