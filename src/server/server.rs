@@ -1,482 +1,257 @@
-//https://github.com/snapview/tokio-tungstenite/blob/master/examples/server.rs
+mod cli;
+mod room;
+mod session;
+mod skribbl;
 
-use super::{skribbl::SkribblState, CliOpts};
+pub use self::cli::CliOpts;
+use self::room::{GameRoom, RoomInbox, RoomMessage};
+
 use crate::{
-    data,
-    message::{InitialState, ToClientMsg, ToServerMsg},
+    data::{GameOpts, UserId, Username},
+    events::{EventQueue, EventSender},
+    message::RoomRequest,
+    utils::{self, AbortableTask},
 };
-use data::{CommandMsg, Message, Username};
-use futures_timer::Delay;
-use futures_util::{SinkExt, StreamExt};
-use std::net::SocketAddr;
-use std::{cmp::min, collections::HashMap, time::Duration};
-use tokio::{
-    net::{TcpListener, TcpStream},
-    sync::Mutex,
-};
+use futures_util::StreamExt;
+use rand::{prelude::ThreadRng, Rng};
+use session::{User, UserSession};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+use thiserror::Error;
+use tokio::net::{TcpListener, TcpStream};
 
-pub const ROUND_DURATION: u64 = 120;
+pub type Result<T> = std::result::Result<T, Error>;
 
-type Result<T> = std::result::Result<T, ServerError>;
-
-#[derive(Debug)]
-pub enum ServerError {
-    UserNotFound(String),
-    SendError(String),
-    WsError(tungstenite::error::Error),
-    IOError(std::io::Error),
-}
-
-impl<T> From<tokio::sync::mpsc::error::SendError<T>> for ServerError {
-    fn from(err: tokio::sync::mpsc::error::SendError<T>) -> Self {
-        ServerError::SendError(err.to_string())
-    }
-}
-
-impl From<tungstenite::error::Error> for ServerError {
-    fn from(err: tungstenite::error::Error) -> Self { ServerError::WsError(err) }
-}
-
-impl From<std::io::Error> for ServerError {
-    fn from(err: std::io::Error) -> Self { ServerError::IOError(err) }
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("IO error")]
+    IOError(#[from] std::io::Error),
+    #[error("empty optional")]
+    EmptyOptional,
 }
 
 #[derive(Debug)]
-enum ServerEvent {
-    ToServerMsg(Username, ToServerMsg),
-    UserJoined(UserSession),
-    UserLeft(Username),
-    Tick,
+pub enum Message {
+    /// Notify server of game request
+    RoomRequest {
+        from: Username,
+        req: RoomRequest,
+    },
+
+    /// Notify server of disconnected client.
+    Disconnect(UserId),
+
+    /// Notify server of room closing
+    RoomClosed(String),
+
+    CtrlC,
 }
 
-#[derive(Debug)]
-struct UserSession {
-    username: Username,
-    msg_send: Mutex<tokio::sync::mpsc::Sender<ToClientMsg>>,
-    close_send: tokio::sync::mpsc::Sender<()>,
+/// store details about room
+struct Room {
+    inbox: RoomInbox,
+    thread_handle: AbortableTask<()>,
 }
 
-impl UserSession {
-    fn new(
-        username: Username,
-        msg_send: tokio::sync::mpsc::Sender<ToClientMsg>,
-        close_send: tokio::sync::mpsc::Sender<()>,
-    ) -> Self {
-        UserSession {
-            username,
-            msg_send: Mutex::new(msg_send),
-            close_send,
-        }
-    }
-
-    async fn close(mut self) -> Result<()> {
-        self.close_send.send(()).await?;
-        Ok(())
-    }
-
-    async fn send(&self, msg: ToClientMsg) -> Result<()> {
-        self.msg_send.lock().await.send(msg.clone()).await?;
-        Ok(())
-    }
+pub struct GameServer {
+    event_queue: EventQueue<Message>,
+    /// hold game rooms by thier key
+    rooms: HashMap<String, Room>,
+    /// list of words
+    words: Arc<Vec<String>>,
+    /// holds the default game configuration
+    default_game_opts: GameOpts,
+    // /// list of players searching for a game
+    // game_queue: Vec<UserId>,
+    /// holds connected users by id
+    connected_users: HashMap<UserId, User>,
+    /// random number generator for id & name generation
+    rng: ThreadRng,
 }
 
-#[derive(Debug)]
-pub enum GameState {
-    FreeDraw,
-    Skribbl(SkribblState),
-}
-
-impl GameState {
-    fn skribbl_state(&self) -> Option<&SkribblState> {
-        match self {
-            GameState::Skribbl(state) => Some(state),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ServerState {
-    sessions: HashMap<Username, UserSession>,
-    pub lines: Vec<data::Line>,
-    pub dimensions: (usize, usize),
-    pub game_state: GameState,
-    pub words: Option<Vec<String>>,
-}
-
-impl ServerState {
-    fn new(game_state: GameState, dimensions: (usize, usize), words: Option<Vec<String>>) -> Self {
-        ServerState {
-            sessions: HashMap::new(),
-            lines: Vec::new(),
-            dimensions,
-            game_state,
-            words,
+impl GameServer {
+    pub fn new(default_game_opts: GameOpts, default_words: Vec<String>) -> Self {
+        Self {
+            event_queue: EventQueue::default(),
+            rooms: HashMap::new(),
+            words: Arc::new(default_words),
+            default_game_opts,
+            // game_queue: Vec::new(),
+            connected_users: HashMap::new(),
+            rng: rand::thread_rng(),
         }
     }
 
-    async fn remove_player(&mut self, username: &Username) -> Result<()> {
-        self.sessions.remove(username).map(|x| x.close());
-        let state = match &mut self.game_state {
-            GameState::Skribbl(state) => state,
-            _ => return Ok(()),
-        };
-        if state.is_drawing(username) {
-            state.next_turn();
-        }
-        state.remove_user(username);
-        let state = state.clone();
-        self.broadcast(ToClientMsg::SkribblStateChanged(state))
-            .await?;
-        Ok(())
-    }
+    pub fn sender(&self) -> &EventSender<Message> { self.event_queue.sender() }
 
-    async fn on_command_msg(&mut self, _username: &Username, msg: &CommandMsg) -> Result<()> {
-        match msg {
-            CommandMsg::KickPlayer(kicked_player) => self.remove_player(kicked_player).await?,
-        }
-        Ok(())
-    }
-
-    async fn on_new_message(&mut self, username: Username, msg: data::Message) -> Result<()> {
-        let mut should_broadcast = true;
-        match self.game_state {
-            GameState::Skribbl(ref mut state) => {
-                let can_guess = state.can_guess(&username);
-                let remaining_time = state.remaining_time();
-                let current_word = state.current_word().to_string();
-                let noone_already_solved = state
-                    .player_states
-                    .iter()
-                    .all(|(_, player)| !player.has_solved);
-
-                if let Some(player_state) = state.player_states.get_mut(&username) {
-                    if can_guess && msg.text().eq_ignore_ascii_case(&current_word) {
-                        should_broadcast = false;
-                        if noone_already_solved {
-                            state.round_end_time -= remaining_time as u64 / 2;
-                        }
-                        player_state.on_solve(remaining_time);
-                        let all_solved = state.did_all_solve();
-                        if all_solved {
-                            state.next_turn();
-                        }
-                        let state = state.clone();
-                        tokio::try_join!(
-                            self.broadcast(ToClientMsg::SkribblStateChanged(state)),
-                            self.broadcast_system_msg(format!("{} guessed it!", username)),
-                        )?;
-                        if all_solved {
-                            self.lines.clear();
-                            tokio::try_join!(
-                                self.broadcast(ToClientMsg::ClearCanvas),
-                                self.broadcast_system_msg(format!(
-                                    "The word was: \"{}\"",
-                                    current_word
-                                ))
-                            )?;
-                        }
-                    } else if is_very_close_to(msg.text().to_string(), current_word.to_string()) {
-                        should_broadcast = false;
-                        if can_guess {
-                            self.send_to(
-                                &username,
-                                ToClientMsg::NewMessage(Message::SystemMsg(
-                                    "You're very close!".to_string(),
-                                )),
-                            )
-                            .await?;
-                        }
-                    }
-                }
-            }
-            GameState::FreeDraw => {
-                if let Some(words) = &self.words {
-                    let skribbl_state = SkribblState::new(
-                        self.sessions.keys().cloned().collect::<Vec<Username>>(),
-                        words.clone(),
-                    );
-                    self.game_state = GameState::Skribbl(skribbl_state.clone());
-                    self.broadcast(ToClientMsg::SkribblStateChanged(skribbl_state))
-                        .await?;
-                }
-            }
-        }
-
-        if should_broadcast {
-            self.broadcast(ToClientMsg::NewMessage(msg)).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn on_to_srv_msg(&mut self, username: Username, msg: ToServerMsg) -> Result<()> {
-        match msg {
-            ToServerMsg::CommandMsg(msg) => {
-                self.on_command_msg(&username, &msg).await?;
-            }
-            ToServerMsg::NewMessage(message) => {
-                self.on_new_message(username, message).await?;
-            }
-            ToServerMsg::NewLine(line) => {
-                self.lines.push(line);
-                self.broadcast(ToClientMsg::NewLine(line)).await?;
-            }
-            ToServerMsg::ClearCanvas => {
-                self.lines.clear();
-                self.broadcast(ToClientMsg::ClearCanvas).await?;
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn on_tick(&mut self) -> Result<()> {
-        let state = match &mut self.game_state {
-            GameState::Skribbl(state) => state,
-            _ => return Ok(()),
-        };
-
-        let remaining_time = state.remaining_time();
-        let revealed_char_cnt = state.revealed_characters().len();
-
-        if remaining_time <= 0 {
-            let old_word = state.current_word().to_string();
-            if let Some(ref mut drawing_user) = state.player_states.get_mut(&state.drawing_user) {
-                drawing_user.score += 50;
-            }
-
-            state.next_turn();
-            let state = self.game_state.skribbl_state().unwrap().clone();
-            self.lines.clear();
-            tokio::try_join!(
-                self.broadcast(ToClientMsg::SkribblStateChanged(state)),
-                self.broadcast(ToClientMsg::ClearCanvas),
-                self.broadcast_system_msg(format!("The word was: \"{}\"", old_word)),
-            )?;
-        } else if remaining_time <= (ROUND_DURATION / 4) as u32 && revealed_char_cnt < 2
-            || remaining_time <= (ROUND_DURATION / 2) as u32 && revealed_char_cnt < 1
-        {
-            state.reveal_random_char();
-            let state = state.clone();
-            self.broadcast(ToClientMsg::SkribblStateChanged(state))
-                .await?;
-        }
-
-        self.broadcast(ToClientMsg::TimeChanged(remaining_time as u32))
-            .await?;
-
-        Ok(())
-    }
-
-    pub async fn on_user_joined(&mut self, session: UserSession) -> Result<()> {
-        if let GameState::Skribbl(ref mut state) = self.game_state {
-            state.add_player(session.username.clone());
-            let state = state.clone();
-            tokio::try_join!(
-                self.broadcast(ToClientMsg::SkribblStateChanged(state)),
-                self.broadcast_system_msg(format!("{} joined", session.username)),
-            )?;
-        }
-
-        let initial_state = InitialState {
-            lines: self.lines.clone(),
-            skribbl_state: self.game_state.skribbl_state().cloned(),
-            dimensions: self.dimensions,
-        };
-        session
-            .send(ToClientMsg::InitialState(initial_state))
-            .await?;
-        self.sessions.insert(session.username.clone(), session);
-        Ok(())
-    }
-
-    /// send a Message::SystemMsg to all active sessions
-    async fn broadcast_system_msg(&self, msg: String) -> Result<()> {
-        self.broadcast(ToClientMsg::NewMessage(Message::SystemMsg(msg)))
-            .await?;
-        Ok(())
-    }
-
-    /// send a ToClientMsg to a specific session
-    pub async fn send_to(&self, user: &Username, msg: ToClientMsg) -> Result<()> {
-        self.sessions
-            .get(user)
-            .ok_or(ServerError::UserNotFound(user.to_string()))?
-            .send(msg)
-            .await?;
-        Ok(())
-    }
-
-    /// broadcast a ToClientMsg to all running sessions
-    async fn broadcast(&self, msg: ToClientMsg) -> Result<()> {
-        futures_util::future::try_join_all(
-            self.sessions
-                .iter()
-                .map(|(_, session)| session.send(msg.clone())),
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// run the main server, reacting to any server events
-    async fn run(&mut self, mut evt_recv: tokio::sync::mpsc::Receiver<ServerEvent>) -> Result<()> {
+    /// generate unique u8
+    fn gen_unique_id(&mut self) -> u8 {
+        // garenteed to return if max num of players is 2^8
         loop {
-            if let Some(evt) = evt_recv.recv().await {
-                match evt {
-                    ServerEvent::ToServerMsg(name, msg) => {
-                        self.on_to_srv_msg(name.into(), msg).await?
-                    }
-                    ServerEvent::UserJoined(session) => self.on_user_joined(session).await?,
-                    ServerEvent::UserLeft(username) => self.remove_player(&username).await?,
-                    ServerEvent::Tick => self.on_tick().await?,
-                }
+            let id: u8 = self.rng.gen();
+            if !self.connected_users.contains_key(&id) {
+                return id;
             }
         }
     }
-}
 
-pub async fn run_server(opt: CliOpts) -> Result<()> {
-    let addr = format!("0.0.0.0:{}", opt.port);
-    let dimensions = opt.dimensions;
-    let maybe_words = opt.words;
+    fn gen_key(&mut self) -> String {
+        let rng = &mut self.rng;
+        let generator =
+            &mut std::iter::repeat(()).map(|_| rng.sample(rand::distributions::Alphanumeric));
 
-    let mut server_listener = TcpListener::bind(addr)
-        .await
-        .expect("Could not start webserver (could not bind)");
-
-    let (srv_event_send, srv_event_recv) = tokio::sync::mpsc::channel::<ServerEvent>(1);
-    let mut server_state = ServerState::new(GameState::FreeDraw, dimensions, maybe_words);
-
-    tokio::spawn(async move {
-        server_state.run(srv_event_recv).await.unwrap();
-    });
-
-    while let Ok((stream, _)) = server_listener.accept().await {
-        let peer = stream.peer_addr().expect("Peer didn't have an address");
-        tokio::spawn(handle_connection(peer, stream, srv_event_send.clone()));
-    }
-    Ok(())
-}
-
-async fn handle_connection(
-    peer: SocketAddr,
-    stream: TcpStream,
-    mut srv_event_send: tokio::sync::mpsc::Sender<ServerEvent>,
-) -> Result<()> {
-    let ws_stream = tokio_tungstenite::accept_async(stream).await?;
-    println!("new WebSocket connection: {}", peer);
-    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-
-    // first, wait for the client to send his username
-    let username: Username = loop {
-        let msg = ws_receiver
-            .next()
-            .await
-            .expect("No username message received")?;
-        if let tungstenite::Message::Text(username) = msg {
-            break username.into();
+        loop {
+            let key: String = generator.take(cli::ROOM_KEY_LENGTH).collect();
+            if !self.rooms.contains_key(&key) {
+                return key;
+            }
         }
-    };
+    }
 
-    let (session_msg_send, mut session_msg_recv) = tokio::sync::mpsc::channel(1);
-    let (session_close_send, mut session_close_recv) = tokio::sync::mpsc::channel(1);
+    fn on_client_disconnect(&mut self, id: UserId) {
+        if self.connected_users.remove(&id).is_some() {
+            log::info!("#{} left the server", id);
+        }
+    }
 
-    // then, create a session and send that session to the server's main thread
-    let session = UserSession::new(username.clone(), session_msg_send, session_close_send);
-    srv_event_send
-        .send(ServerEvent::UserJoined(session))
-        .await?;
+    fn kick_user<S: Into<String>>(&mut self, user_id: UserId, reason: S) {
+        if let Some(user) = self.connected_users.remove(&user_id) {
+            user.inbox.send(session::Message::Kick(reason.into()));
+            log::info!("#{} kicked from the server", user_id);
+        }
+    }
 
-    // TODO look at stream forwarding for this...
-    // asynchronously read messages that the main server thread wants
-    // to send to this client and forward them to the WS client
-    let send_thread = tokio::spawn(async move {
+    fn on_room_close(&mut self, key: String) {
+        if key.as_str() == "default" {
+            log::info!("did not close main room");
+        } else if let Some(_room) = self.rooms.remove(&key) {
+            log::info!("closed room {}", key)
+        }
+    }
+
+    fn dispatch_room(&mut self, key: String, leader: Option<Username>) {
+        let mut room = GameRoom::new(key, self.default_game_opts.clone(), &self.words, leader);
+        let server = self.sender().clone();
+        let sender = room.sender().clone();
+        let room_key = room.key().to_owned();
+
+        // dispatch room
+        let key = room_key.clone();
+        let thread_handle = utils::dispatch_abortable_task(async move {
+            if let Err(e) = room.run_loop().await {
+                log::error!("room encountered error {}", e);
+            }
+
+            // notify server of room death
+            server.send_with_urgency(Message::RoomClosed(key));
+        });
+
+        self.rooms.insert(
+            room_key,
+            Room {
+                inbox: sender,
+                thread_handle,
+            },
+        );
+    }
+
+    fn on_room_request(&mut self, name: Username, action: RoomRequest) {
+        let user_id = name.id();
+        let inbox = if let Some(user) = self.connected_users.get_mut(&user_id) {
+            user.inbox.clone()
+        } else {
+            return;
+        };
+
+        let room_key = match action {
+            RoomRequest::Join(room_key) => room_key,
+            RoomRequest::Create => {
+                let room_key = self.gen_key();
+                self.dispatch_room(room_key.clone(), Some(name.clone()));
+
+                room_key
+            }
+            _ => {
+                // TODO: allow users to queue for game rooms
+                return self.kick_user(name.id(), "Unimplemented feature".to_owned());
+            }
+        };
+
+        if let Some(room) = self.rooms.get(&room_key) {
+            room.inbox.send(RoomMessage::Join { name, inbox });
+        } else {
+            inbox.send_with_urgency(session::Message::RoomNotFound);
+        }
+    }
+
+    /// handle stream of TcpStream's
+    fn on_client_connect(&mut self, peer_addr: SocketAddr, st: TcpStream) {
+        log::info!("new client connection: {}", peer_addr);
+
+        let unique_id = self.gen_unique_id();
+        let sender = self.event_queue.sender().clone();
+        let framed_socket_io = utils::frame_socket(st);
+
+        self.connected_users.insert(
+            unique_id,
+            UserSession::create_user(unique_id, peer_addr, sender, framed_socket_io),
+        );
+    }
+
+    /// start server listener on given address
+    pub async fn listen_on(mut self, addr: &str) -> Result<()> {
+        // start tcp listener :: TODO: maybe use udp or both instead?
+        let mut tcp_listener = TcpListener::bind(addr)
+            .await
+            .expect("Could not start webserver (could not bind)")
+            .map(|stream| {
+                let st = stream.unwrap();
+                let addr = st.peer_addr().unwrap();
+
+                st.set_nodelay(true)
+                    .expect("Failed to set stream as nonblocking");
+
+                st.set_keepalive(Some(Duration::from_secs(1)))
+                    .expect("Failed to set keepalive");
+
+                (st, addr)
+            });
+
+        // create default game room for NOW
+        self.dispatch_room("default".to_owned(), None);
+
         loop {
             tokio::select! {
-                maybe_msg = session_msg_recv.recv() => match maybe_msg {
-                    Some(msg) => {
-                        let msg = serde_json::to_string(&msg).expect("Could not serialize msg");
-                        let result = ws_sender.send(tungstenite::Message::Text(msg)).await;
-                        if let Err(_) = result {
-                            break result;
-                        }
+                Some(event) = self.event_queue.recv_async() => {
+                    match event {
+                        Message::CtrlC => break,
+                        Message::RoomRequest { from, req, } => self.on_room_request(from, req),
+                        Message::Disconnect (id) => self.on_client_disconnect(id),
+                        Message::RoomClosed (key)=> self.on_room_close(key),
                     }
-                    // if the msg received is None, all senders have been closed, so we can finish
-                    None => {
-                        ws_sender.send(tungstenite::Message::Close(None)).await?;
-                        break Ok(());
-                    }
-                },
-                _ = session_close_recv.recv() => {
-                    ws_sender.send(tungstenite::Message::Close(None)).await?;
-                    break Ok(());
                 }
-            }
+
+                // listen and accept incoming connections in async thread.
+                Some((socket, addr)) = tcp_listener.next() => self.on_client_connect(addr, socket),
+
+                // tcp pipe probably closed, stop server
+                else => break,
+            };
         }
-    });
 
-    // TODO look at stream forwarding for this
-    // forward other events to the main server thread
-    loop {
-        let delay = Delay::new(Duration::from_millis(500));
-        tokio::select! {
-            // every 100ms, send a tick event to the main server thread
-            _ = delay => srv_event_send.send(ServerEvent::Tick).await?,
+        log::info!("server closing");
 
-            // Websocket messages from the client
-            msg = ws_receiver.next() => match msg {
-                Some(Ok(tungstenite::Message::Text(msg))) => match serde_json::from_str(&msg) {
-                    Ok(Some(msg)) => {
-                        srv_event_send
-                            .send(ServerEvent::ToServerMsg(username.clone(), msg))
-                            .await?;
-                    }
-                    Ok(None) => {
-                        break;
-                    }
-                    Err(err) => {
-                        eprintln!("{} (msg was: {})", err, msg);
-                    }
-                },
-                Some(Ok(tungstenite::Message::Close(_))) | Some(Err(_)) | None => break,
-                _ => {}
-            }
+        // disconnect users
+        for (_, user) in self.connected_users.drain() {
+            user.inbox
+                .send_with_urgency(session::Message::Kick("Server Shutdown".into()));
         }
+
+        // close of game rooms
+        for (_, room) in self.rooms.drain() {
+            room.inbox.send_with_urgency(RoomMessage::Close);
+            room.thread_handle.abort(); // dont wait for room to finish
+        }
+
+        Ok(())
     }
-
-    drop(send_thread);
-    srv_event_send.send(ServerEvent::UserLeft(username)).await?;
-    Ok(())
-}
-
-fn is_very_close_to(a: String, b: String) -> bool { return levenshtein_distance(a, b) <= 1; }
-
-fn levenshtein_distance(a: String, b: String) -> usize {
-    let w1 = a.chars().collect::<Vec<_>>();
-    let w2 = b.chars().collect::<Vec<_>>();
-
-    let a_len = w1.len() + 1;
-    let b_len = w2.len() + 1;
-
-    let mut matrix = vec![vec![0]];
-
-    for i in 1..a_len {
-        matrix[0].push(i);
-    }
-    for j in 1..b_len {
-        matrix.push(vec![j]);
-    }
-
-    for (j, i) in (1..b_len).flat_map(|j| (1..a_len).map(move |i| (j, i))) {
-        let x: usize = if w1[i - 1].eq_ignore_ascii_case(&w2[j - 1]) {
-            matrix[j - 1][i - 1]
-        } else {
-            1 + min(
-                min(matrix[j][i - 1], matrix[j - 1][i]),
-                matrix[j - 1][i - 1],
-            )
-        };
-        matrix[j].push(x);
-    }
-    matrix[b_len - 1][a_len - 1]
 }
