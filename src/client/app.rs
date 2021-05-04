@@ -180,7 +180,7 @@ impl App {
                 } else if let ToClient::JoinRoom(initial_room_state) = *message {
                     self.state = Room::new(initial_room_state).into();
                 } else {
-                    unimplemented!("havnt impl handler for msg {:#?}", *message)
+                    unimplemented!("msg {:#?}", *message)
                 }
             }
         }
@@ -257,8 +257,8 @@ impl App {
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
         let input_task_handle = self.setup_input_events();
-
         let mut terminal = Terminal::new(ui::backend()).unwrap();
+        // TODO: display notifications if any.
 
         while !self.should_exit {
             terminal.draw(|frame| self.get_current_view().draw(frame, self))?;
