@@ -4,23 +4,24 @@ version = "0.1.0"
 authors = ["Leon Kowarschick <lkowarschick@gmail.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-crossterm = { version = "0.17", features = ["event-stream"] }
-tui = { version = "0.9", default-features = false, features = ['crossterm'] }
+crossterm = { version = "0.19", features = ["event-stream"] }
+tui = { version = "0.14", default-features = false, features = ['crossterm'] }
 line_drawing = "0.8.0"
-tungstenite = "0.10.1"
-tokio-tungstenite = "0.10.1"
+bincode = "1.3.1"
+bytes = "0.5.0"
+byteorder = "1.4.2"
 serde = { version = "1.0.111", features = ["derive"] }
-serde_json = "1.0"
 tokio = { version = "0.2", features = ["full"] }
-futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
-structopt = { version = "0.3" }
+tokio-util = { version = "0.3", features = ["codec"] }
+futures-util = { version = "0.3", features = ["async-await-macro", "sink"] }
 rand = "0.7"
-futures-timer = "3.0"
 reqwest = "0.10"
-
+log = "0.4"
+pretty_env_logger = "0.4.0"
+argh = "0.1.4"
+thiserror = "1.0.24"
+flume = "0.10.2"
 
 [profile.release]
 lto = true

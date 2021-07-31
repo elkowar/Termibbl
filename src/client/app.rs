@@ -1,309 +1,292 @@
-use crate::{
-    client::error::Result,
-    client::ui,
-    data::{self, CanvasColor, Coord, Line, Message},
-    message::{InitialState, ToClientMsg, ToServerMsg},
-    server::skribbl::{PlayerState, SkribblState},
-    ClientEvent,
+use std::{net::SocketAddr, time::Duration};
+
+use crossterm::{
+    event::{
+        DisableMouseCapture, EnableMouseCapture, EventStream, KeyCode, KeyEvent, KeyModifiers,
+    },
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
-use futures_util::sink::SinkExt;
-use futures_util::stream::StreamExt;
+use futures_util::StreamExt;
+use tui::Terminal;
 
-use data::{CommandMsg, Username};
-use tokio_tungstenite::WebSocketStream;
-use tui::{backend::Backend, Terminal};
+use crate::{
+    data::Username,
+    events::{EventQueue, EventSender},
+    message::ToClient,
+    utils::{self, AbortableTask},
+};
 
-const PALETTE: [CanvasColor; 16] = [
-    CanvasColor::White,
-    CanvasColor::Gray,
-    CanvasColor::DarkGray,
-    CanvasColor::Black,
-    CanvasColor::Red,
-    CanvasColor::LightRed,
-    CanvasColor::Green,
-    CanvasColor::LightGreen,
-    CanvasColor::Blue,
-    CanvasColor::LightBlue,
-    CanvasColor::Yellow,
-    CanvasColor::LightYellow,
-    CanvasColor::Cyan,
-    CanvasColor::LightCyan,
-    CanvasColor::Magenta,
-    CanvasColor::LightMagenta,
-];
+use super::{
+    app_server::{AppServer, NetEvent},
+    error::Result,
+    ui::{self, Room, StartMenu, View},
+    InputEvent,
+};
 
-#[derive(Debug, Clone)]
-pub struct AppCanvas {
-    pub palette: Vec<CanvasColor>,
-    pub lines: Vec<data::Line>,
-    pub dimensions: (usize, usize),
+pub enum Event {
+    Input(InputEvent),
+    Net(NetEvent),
+    CtrlC,
+    CloseNotification,
 }
 
-impl AppCanvas {
-    fn new(dimensions: (usize, usize), lines: Vec<data::Line>) -> Self {
-        AppCanvas {
-            lines,
-            dimensions,
-            palette: PALETTE.to_vec(),
-        }
-    }
+enum State {
+    Start(StartMenu),
+    InGameRoom(Box<Room>),
 }
 
-impl AppCanvas {
-    pub fn draw_line(&mut self, line: Line) {
-        self.lines.push(line);
-    }
+impl Default for State {
+    fn default() -> Self { Self::Start(StartMenu::default()) }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Chat {
-    pub input: String,
-    pub messages: Vec<Message>,
+impl From<Room> for State {
+    fn from(v: Room) -> Self { Self::InGameRoom(Box::new(v)) }
 }
 
-#[derive(Debug)]
+#[derive(Default)]
 pub struct App {
-    pub canvas: AppCanvas,
-    pub chat: Chat,
-    pub session: ServerSession,
-    pub last_mouse_pos: Option<Coord>,
-    pub current_color: CanvasColor,
-    pub game_state: Option<SkribblState>,
-    pub remaining_time: Option<u32>,
+    event_queue: EventQueue<Event>,
+    state: State,
+    server: AppServer,
+    should_exit: bool,
+    notifications: Vec<String>,
 }
 
 impl App {
-    pub fn new(session: ServerSession, initial_state: InitialState) -> App {
-        App {
-            canvas: AppCanvas::new(initial_state.dimensions, initial_state.lines),
-            chat: Chat::default(),
-            last_mouse_pos: None,
-            current_color: CanvasColor::White,
-            game_state: initial_state.skribbl_state,
-            session,
-            remaining_time: None,
+    pub fn sender(&self) -> &EventSender<Event> { self.event_queue.sender() }
+
+    pub fn server(&self) -> &AppServer { &self.server }
+
+    pub fn exit(&mut self) { self.should_exit = true; }
+
+    pub fn set_name_input(&mut self, name: String) {
+        if let State::Start(start_menu) = &mut self.state {
+            start_menu.username_input.set_content(name);
         }
     }
 
-    pub fn own_player(&self) -> Option<&PlayerState> {
-        self.game_state
-            .as_ref()
-            .and_then(|state| state.player_states.get(&self.session.username))
-    }
-
-    pub fn is_drawing(&self) -> bool {
-        self.game_state
-            .as_ref()
-            .map(|x| x.is_drawing(&self.session.username))
-            .unwrap_or(true)
-    }
-
-    pub async fn handle_mouse_event(&mut self, evt: MouseEvent) -> Result<()> {
-        if !self.is_drawing() {
-            return Ok(());
+    pub fn set_host_input(&mut self, addr: String) {
+        if let State::Start(start_menu) = &mut self.state {
+            start_menu.host_input.set_content(addr);
         }
+    }
 
-        let dimensions = self.canvas.dimensions;
-        match evt {
-            MouseEvent::Down(_, x, y, _) => {
-                if y == 0 {
-                    let swatch_size = dimensions.0 / self.canvas.palette.len() as usize;
-                    let selected_color = self.canvas.palette.get(x as usize / swatch_size);
-                    match selected_color {
-                        Some(color) => self.current_color = color.clone(),
-                        _ => {}
-                    }
+    pub fn get_current_view(&self) -> &dyn View {
+        match &self.state {
+            State::Start(start_menu) => start_menu,
+            State::InGameRoom(room) => room.get_current_view(),
+        }
+    }
+
+    fn get_current_view_mut(&mut self) -> &mut dyn View {
+        match &mut self.state {
+            State::Start(start_menu) => start_menu,
+            State::InGameRoom(room) => room.get_current_view_mut(),
+        }
+    }
+
+    pub fn connect_to_server(&mut self, addr: SocketAddr) {
+        self.server.connect(addr, self.event_queue.sender().clone());
+    }
+
+    pub fn username(&self) -> Option<&Username> {
+        match &self.state {
+            State::InGameRoom(room) => Some(&room.username),
+            _ => None,
+        }
+    }
+
+    fn go_back(&mut self) {
+        match &mut self.state {
+            State::InGameRoom(_) => {
+                self.server
+                    .send_message(crate::message::ToServer::LeaveRoom);
+            }
+
+            State::Start(menu) => {
+                if menu.host_input.has_focus() {
+                    self.exit();
                 } else {
-                    self.last_mouse_pos = Some(Coord(x, y));
-                }
-            }
-            MouseEvent::Up(_, _, _, _) => {
-                self.last_mouse_pos = None;
-            }
-            MouseEvent::Drag(_, x, y, _) => {
-                let mouse_pos = Coord(x, y);
-                let line = Line::new(
-                    self.last_mouse_pos.unwrap_or(mouse_pos),
-                    mouse_pos,
-                    self.current_color,
-                );
-                self.canvas.draw_line(line);
-                self.session.send(ToServerMsg::NewLine(line)).await?;
-                self.last_mouse_pos = Some(mouse_pos);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    pub async fn handle_chat_key_event(&mut self, event: &KeyEvent) -> Result<()> {
-        let KeyEvent { modifiers, code } = event;
-        match code {
-            KeyCode::Enter => {
-                if self.chat.input.trim().is_empty() {
-                    self.chat.input = String::new();
-                    return Ok(());
-                }
-
-                let msg_content = self.chat.input.clone();
-                if msg_content.starts_with("!") {
-                    if msg_content.starts_with("!kick ") {
-                        let msg_without_cmd =
-                            msg_content.trim_start_matches("!kick ").trim().to_string();
-                        let command = CommandMsg::KickPlayer(Username::from(msg_without_cmd));
-                        self.session.send(ToServerMsg::CommandMsg(command)).await?;
-                    };
-                } else {
-                    let message =
-                        Message::UserMsg(self.session.username.clone(), self.chat.input.clone());
-                    self.session.send(ToServerMsg::NewMessage(message)).await?;
-                }
-                self.chat.input = String::new();
-            }
-            KeyCode::Backspace => {
-                self.chat.input.pop();
-            }
-            KeyCode::Char('h') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.chat.input.pop();
-            }
-            KeyCode::Delete => {
-                if self.is_drawing() {
-                    self.session.send(ToServerMsg::ClearCanvas).await?;
-                    self.canvas.lines.clear();
-                }
-            }
-            KeyCode::Char(c) => {
-                self.chat.input.push(*c);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    pub async fn handle_event(&mut self, evt: ClientEvent) -> Result<()> {
-        match evt {
-            ClientEvent::KeyInput(evt) => {
-                self.handle_chat_key_event(&evt).await?;
-            }
-            ClientEvent::MouseInput(mouse_evt) => {
-                self.handle_mouse_event(mouse_evt).await?;
-            }
-            ClientEvent::ServerMessage(m) => match m {
-                ToClientMsg::TimeChanged(new_time) => {
-                    self.remaining_time = Some(new_time);
-                }
-                ToClientMsg::NewMessage(message) => self.chat.messages.push(message),
-                ToClientMsg::NewLine(line) => {
-                    self.canvas.draw_line(line);
-                }
-                ToClientMsg::SkribblStateChanged(new_state) => {
-                    self.game_state = Some(new_state);
-                }
-                ToClientMsg::ClearCanvas => {
-                    self.canvas.lines.clear();
-                }
-                ToClientMsg::GameOver(state) => {
-                    dbg!(state);
-                    panic!("Game over, I couldn't yet be bothered to implement this in a better way yet,...");
-                }
-                ToClientMsg::InitialState(_) => {}
-            },
-        }
-        Ok(())
-    }
-
-    pub async fn run<B: Backend>(
-        &mut self,
-        mut terminal: &mut Terminal<B>,
-        mut chan: tokio::sync::mpsc::Receiver<ClientEvent>,
-    ) -> Result<()> {
-        loop {
-            ui::draw(self, &mut terminal)?;
-            if let Some(event) = chan.recv().await {
-                self.handle_event(event).await?;
-            } else {
-                break Ok(());
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ServerSession {
-    to_server_send: tokio::sync::mpsc::Sender<ToServerMsg>,
-    pub username: Username,
-}
-
-impl ServerSession {
-    pub async fn establish_connection(
-        addr: &str,
-        username: Username,
-        mut evt_send: tokio::sync::mpsc::Sender<ClientEvent>,
-    ) -> Result<App> {
-        let (to_server_send, mut to_server_recv) = tokio::sync::mpsc::channel::<ToServerMsg>(1);
-
-        let ws: WebSocketStream<_> = tokio_tungstenite::connect_async(addr)
-            .await
-            .expect("Could not connect to server")
-            .0;
-        let (mut ws_send, mut ws_recv) = ws.split();
-
-        // first send the username to the server
-        ws_send
-            .send(tungstenite::Message::Text(username.clone().into()))
-            .await
-            .unwrap();
-
-        // and wait for the initial state
-        let initial_state: InitialState = loop {
-            let msg = ws_recv.next().await;
-            if let Some(Ok(tungstenite::Message::Text(msg))) = msg {
-                if let Ok(ToClientMsg::InitialState(state)) = serde_json::from_str(&msg) {
-                    break state;
+                    self.server.disconnect();
                 }
             }
         };
+    }
 
-        // forward events to the server
-        let send_handle = tokio::spawn(async move {
+    fn display_notif(&mut self, error: String) {
+        self.notifications.push(error);
+        self.sender()
+            .send_with_delay(Event::CloseNotification, Duration::from_secs(4));
+    }
+
+    fn handle_net_event(&mut self, event: NetEvent) -> Result<()> {
+        match event {
+            NetEvent::SessionCreate(session) => {
+                self.server.set_session(session)?;
+
+                let is_connected = self.server.is_connected();
+                if let State::Start(state) = &mut self.state {
+                    state.on_connection_status_changed(is_connected);
+                }
+            }
+
+            NetEvent::Status(status) => {
+                let addr = self.server.addr();
+                self.server.set_status(status);
+
+                let is_connected = self.server.is_connected();
+                match &mut self.state {
+                    State::InGameRoom(ref room) => {
+                        if !is_connected {
+                            self.state =
+                                State::Start(StartMenu::new(addr, Some(room.username.to_string())));
+                        }
+                    }
+
+                    State::Start(ref mut start_menu) => {
+                        start_menu.on_connection_status_changed(is_connected);
+                    }
+                };
+            }
+
+            NetEvent::Message(message) => {
+                if let ToClient::Disconnect(reason) = *message {
+                    // if server disconnects us
+                    self.display_notif(reason);
+                } else if let State::InGameRoom(room) = &mut self.state {
+                    match *message {
+                        ToClient::RoomEvent(event) => room.process_event(event),
+                        ToClient::LeaveRoom(maybe_reason) => {
+                            // kick to start screen
+                            self.state = State::Start(StartMenu::new(
+                                self.server.addr(),
+                                Some(room.username.to_string()),
+                            ));
+
+                            if let Some(reason) = maybe_reason {
+                                self.display_notif(reason)
+                            }
+                        }
+
+                        _ => {
+                            // server sent unknown message ... do nothing
+                            // panic!(
+                            // "server & client state not in sync {:?}",
+                            // message
+                            // ),
+                        }
+                    };
+                } else if let ToClient::JoinRoom(initial_room_state) = *message {
+                    self.state = Room::new(initial_room_state).into();
+                } else {
+                    unimplemented!("msg {:#?}", *message)
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_input_event(&mut self, event: InputEvent) -> Result<()> {
+        if event == InputEvent::Key(KeyCode::Esc.into()) {
+            self.go_back();
+        } else {
+            let view = self.get_current_view_mut();
+            let action = match event {
+                InputEvent::Key(key_event) => view.on_key_event(key_event),
+                InputEvent::Mouse(mouse_event) => view.on_mouse_event(mouse_event),
+                InputEvent::Resize(x, y) => {
+                    view.on_resize((x, y));
+                    return Ok(());
+                }
+            };
+
+            action(self);
+        }
+
+        Ok(())
+    }
+
+    fn setup_input_events(&self) -> AbortableTask<()> {
+        let sender = self.sender().clone();
+        let ctrl_c = InputEvent::Key(KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+        });
+        let mut reader = EventStream::new();
+
+        utils::dispatch_abortable_task(async move {
             loop {
-                let msg = to_server_recv.recv().await;
-                let msg = serde_json::to_string(&msg).unwrap();
-                if let Err(_) = ws_send.send(tungstenite::Message::Text(msg)).await {
+                let event = reader.next();
+
+                if let Some(Ok(mut event)) = event.await {
+                    // handle ctrl_c
+                    if event == ctrl_c {
+                        sender.send_with_urgency(Event::CtrlC);
+                    } else if let InputEvent::Resize(x, y) = &mut event {
+                        // Resize events can occur in batches.
+                        // With a simple loop they can be flushed.
+                        // return whether resize event was flushed
+                        while let Ok(true) = crossterm::event::poll(Duration::from_millis(50)) {
+                            if let Ok(InputEvent::Resize(resize_x, resize_y)) =
+                                crossterm::event::read()
+                            {
+                                *x = resize_x;
+                                *y = resize_y;
+                            }
+                        }
+                        sender.send_with_urgency(Event::Input(event))
+                    } else {
+                        sender.send(Event::Input(event))
+                    }
+                } else {
                     break;
                 }
             }
-        });
-
-        // and receive messages from the server
-        tokio::spawn(async move {
-            loop {
-                match ws_recv.next().await {
-                    Some(Ok(tungstenite::Message::Text(msg))) => {
-                        let msg = serde_json::from_str(&msg).unwrap();
-                        let _ = evt_send.send(ClientEvent::ServerMessage(msg)).await;
-                    }
-                    Some(Ok(tungstenite::Message::Close(_))) => {
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            std::mem::drop(send_handle);
-        });
-
-        Ok(App::new(
-            ServerSession {
-                to_server_send,
-                username,
-            },
-            initial_state,
-        ))
+        })
     }
 
-    pub async fn send(&mut self, message: ToServerMsg) -> Result<()> {
-        self.to_server_send.send(message).await?;
+    /// Start the main loop.
+    ///
+    /// This will listen to events and do the appropriate actions.
+    pub async fn start(&mut self) -> Result<()> {
+        let mut stdout = std::io::stdout();
+
+        enable_raw_mode()?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+
+        let input_task_handle = self.setup_input_events();
+        let mut terminal = Terminal::new(ui::backend()).unwrap();
+        // TODO: display notifications if any.
+
+        while !self.should_exit {
+            terminal.draw(|frame| self.get_current_view().draw(frame, self))?;
+
+            match self.event_queue.recv_async().await.unwrap() {
+                // handle network events
+                Event::Net(net_event) => self.handle_net_event(net_event)?,
+
+                // handle input events
+                Event::Input(event) => self.handle_input_event(event)?,
+
+                // close notification
+                Event::CloseNotification => {
+                    self.notifications.pop();
+                }
+
+                // close on ctrl-c
+                Event::CtrlC => self.exit(),
+            }
+        }
+
+        self.server.disconnect();
+
+        // stop listening for inputs
+        input_task_handle.abort();
+
+        execute!(stdout, LeaveAlternateScreen, DisableMouseCapture)?;
+        disable_raw_mode()?;
         Ok(())
     }
 }
