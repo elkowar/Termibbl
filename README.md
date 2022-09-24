@@ -49,7 +49,7 @@ Which should be fine and not conflict with anything.
 #### Connecting to a server
 
 ```sh
-termibbl client --address <public termibbl adress>:<port> <username>
+termibbl client --address <public termibbl address>:<port> <username>
 ```
 
 ### Usage
